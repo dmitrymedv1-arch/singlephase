@@ -1,7 +1,10 @@
 streamlit
-pandas
 numpy
+pandas
 matplotlib
 seaborn
-scikit-learn
+scipy
+plotly
+scienceplots
+kaleido
 openpyxl

@@ -120,9 +120,24 @@ def get_ionic_radius(element, charge, coordination):
 
 def calculate_descriptors(row):
     """Расчет всех дескрипторов для одной строки"""
-    B = row['B']
-    D = row['D']
-    x = row.get('x_boundary', 0)  # используем границу растворимости
+    # Проверяем наличие необходимых ключей
+    if 'B_element' not in row.index or 'D_element' not in row.index:
+        return {
+            'r_B': None,
+            'r_D': None,
+            'dr': None,
+            'dr_rel': None,
+            'r_avg_B': None,
+            'tolerance_factor': None
+        }
+    
+    B = row['B_element']
+    D = row['D_element']
+    
+    # Получаем x_boundary, если есть
+    x = row.get('x_boundary', 0)
+    if pd.isna(x):
+        x = 0
     
     # Получаем радиусы
     r_Ba = IONIC_RADII.get(('Ba', 2, 12), None)
@@ -181,36 +196,89 @@ def process_data(df):
     """Основная функция обработки данных"""
     df_processed = df.copy()
     
-    # Переименование колонок для удобства
-    column_mapping = {
-        'A': 'A_element',  # обычно Ba
-        'B': 'B_element',
-        'D': 'D_element',
-        'x(inv,in)': 'x_inv_in',
-        'x(inv,end)': 'x_inv_end',
-        'x(boundary)': 'x_boundary',
-        'Impurity phase(s)': 'impurity',
-        'x(max)': 'x_max',
-        'doi': 'doi'
-    }
+    # Выводим названия колонок для отладки
+    print("Original columns:", df_processed.columns.tolist())
     
-    # Переименовываем только существующие колонки
-    for old, new in column_mapping.items():
-        if old in df_processed.columns:
-            df_processed.rename(columns={old: new}, inplace=True)
+    # Создаем маппинг на основе первых строк или стандартных названий
+    column_mapping = {}
+    
+    # Пробуем определить колонки по их содержимому или позиции
+    # Обычно в таких таблицах порядок колонок фиксирован:
+    # A, B, D, x(inv,in), x(inv,end), x(boundary), Impurity phase(s), x(max), doi
+    
+    expected_order = [
+        'A_element', 'B_element', 'D_element', 
+        'x_inv_in', 'x_inv_end', 'x_boundary', 
+        'impurity', 'x_max', 'doi'
+    ]
+    
+    # Если колонок ровно 9, используем позиционное соответствие
+    if len(df_processed.columns) == 9:
+        for i, col_name in enumerate(expected_order):
+            column_mapping[df_processed.columns[i]] = col_name
+    else:
+        # Пробуем найти соответствия по частичному совпадению
+        for col in df_processed.columns:
+            col_lower = str(col).lower()
+            
+            if 'a' == col_lower or 'a-site' in col_lower or 'site a' in col_lower:
+                column_mapping[col] = 'A_element'
+            elif 'b' == col_lower or 'b-site' in col_lower or 'site b' in col_lower:
+                column_mapping[col] = 'B_element'
+            elif 'd' == col_lower or 'dopant' in col_lower:
+                column_mapping[col] = 'D_element'
+            elif 'x(inv,in)' in col_lower or 'inv in' in col_lower or 'x_inv_in' in col_lower:
+                column_mapping[col] = 'x_inv_in'
+            elif 'x(inv,end)' in col_lower or 'inv end' in col_lower or 'x_inv_end' in col_lower:
+                column_mapping[col] = 'x_inv_end'
+            elif 'x(boundary)' in col_lower or 'boundary' in col_lower:
+                column_mapping[col] = 'x_boundary'
+            elif 'impurity' in col_lower or 'phase' in col_lower:
+                column_mapping[col] = 'impurity'
+            elif 'x(max)' in col_lower or 'max' in col_lower:
+                column_mapping[col] = 'x_max'
+            elif 'doi' in col_lower:
+                column_mapping[col] = 'doi'
+    
+    # Применяем маппинг
+    df_processed.rename(columns=column_mapping, inplace=True)
+    
+    # Проверяем, что все необходимые колонки есть
+    required_cols = ['B_element', 'D_element']
+    missing_cols = [col for col in required_cols if col not in df_processed.columns]
+    
+    if missing_cols:
+        st.error(f"Missing required columns: {missing_cols}")
+        st.write("Available columns:", df_processed.columns.tolist())
+        # Пробуем использовать первые колонки как A, B, D если они есть
+        if len(df_processed.columns) >= 3:
+            st.warning("Trying to use first three columns as A, B, D elements")
+            col_names = list(df_processed.columns)
+            df_processed.rename(columns={
+                col_names[0]: 'A_element',
+                col_names[1]: 'B_element',
+                col_names[2]: 'D_element'
+            }, inplace=True)
     
     # Заполняем пропуски
     for col in ['x_boundary', 'x_max']:
         if col in df_processed.columns:
             df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
     
+    # Обработка примесей
     if 'impurity' in df_processed.columns:
-        df_processed['impurity'] = df_processed['impurity'].fillna('none')
+        df_processed['impurity'] = df_processed['impurity'].fillna('none').astype(str)
+        df_processed['impurity'] = df_processed['impurity'].replace(['-', '--', ''], 'none')
         df_processed['has_impurity'] = df_processed['impurity'] != 'none'
+    else:
+        df_processed['impurity'] = 'none'
+        df_processed['has_impurity'] = False
     
     # Извлекаем год из DOI
     if 'doi' in df_processed.columns:
         df_processed['year'] = df_processed['doi'].apply(extract_year_from_doi)
+    else:
+        df_processed['year'] = None
     
     # Рассчитываем дескрипторы для каждой строки
     descriptors_list = []
@@ -225,10 +293,12 @@ def process_data(df):
     
     # Дополнительные параметры
     if 'x_boundary' in result.columns and 'x_inv_end' in result.columns:
-        result['x_rel_boundary'] = result['x_boundary'] / result['x_inv_end']
+        with np.errstate(divide='ignore', invalid='ignore'):
+            result['x_rel_boundary'] = result['x_boundary'] / result['x_inv_end']
     
     if 'x_max' in result.columns and 'x_boundary' in result.columns:
-        result['x_rel_max'] = result['x_max'] / result['x_boundary']
+        with np.errstate(divide='ignore', invalid='ignore'):
+            result['x_rel_max'] = result['x_max'] / result['x_boundary']
     
     return result
 
@@ -775,3 +845,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

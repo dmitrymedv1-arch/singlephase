@@ -5,8 +5,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import LabelEncoder
+from scipy import stats
+from scipy.signal import find_peaks
 import re
 from datetime import datetime
+import openpyxl
 
 # Научный стиль графиков
 plt.rcParams.update({
@@ -299,8 +304,82 @@ def process_data(df):
     if 'x_max' in result.columns and 'x_boundary' in result.columns:
         with np.errstate(divide='ignore', invalid='ignore'):
             result['x_rel_max'] = result['x_max'] / result['x_boundary']
+            result['x_diff_norm'] = (result['x_max'] - result['x_boundary']) / result['x_boundary']
     
     return result
+
+# ============================================================================
+# НОВЫЕ ФУНКЦИИ ДЛЯ РАСЧЕТА СТАТИСТИКИ
+# ============================================================================
+def calculate_correlations(df, features):
+    """Расчет корреляций Пирсона и Спирмена с p-value"""
+    corr_data = []
+    for i, f1 in enumerate(features):
+        for f2 in features[i+1:]:
+            valid = df[[f1, f2]].dropna()
+            if len(valid) > 3:
+                try:
+                    pearson_r, pearson_p = stats.pearsonr(valid[f1], valid[f2])
+                    spearman_r, spearman_p = stats.spearmanr(valid[f1], valid[f2])
+                    corr_data.append({
+                        'Feature 1': f1,
+                        'Feature 2': f2,
+                        'Pearson r': f'{pearson_r:.3f}',
+                        'Pearson p': f'{pearson_p:.3e}',
+                        'Spearman ρ': f'{spearman_r:.3f}',
+                        'Spearman p': f'{spearman_p:.3e}',
+                        'N': len(valid)
+                    })
+                except:
+                    continue
+    return pd.DataFrame(corr_data)
+
+def calculate_t_series(row, x_points=50):
+    """Рассчитать tolerance factor для ряда x"""
+    if pd.isna(row.get('r_B')) or pd.isna(row.get('r_D')):
+        return None
+    
+    r_Ba = 1.61
+    r_O = 1.4
+    r_B = row['r_B']
+    r_D = row['r_D']
+    x_max = row.get('x_boundary', 0.5)
+    if pd.isna(x_max) or x_max <= 0:
+        x_max = 0.5
+    
+    x_vals = np.linspace(0, min(x_max, 0.8), x_points)
+    r_avg = (1 - x_vals) * r_B + x_vals * r_D
+    t_vals = (r_Ba + r_O) / (np.sqrt(2) * (r_avg + r_O))
+    
+    return x_vals, t_vals
+
+def feature_importance_analysis(df):
+    """Random Forest анализ важности признаков"""
+    # Подготовка данных
+    plot_df = df.dropna(subset=['x_boundary', 'dr', 'tolerance_factor', 'B_element'])
+    
+    if len(plot_df) < 10:
+        return None, None
+    
+    # One-hot encoding для B_element
+    X = pd.get_dummies(plot_df[['dr', 'tolerance_factor', 'B_element']], 
+                       columns=['B_element'])
+    y = plot_df['x_boundary']
+    
+    # Random Forest
+    rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    rf.fit(X, y)
+    
+    # Важность признаков
+    importance_df = pd.DataFrame({
+        'feature': X.columns,
+        'importance': rf.feature_importances_
+    }).sort_values('importance', ascending=False)
+    
+    # Оценка качества
+    r2 = rf.score(X, y)
+    
+    return importance_df, r2
 
 # ============================================================================
 # ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ
@@ -589,6 +668,415 @@ def plot_temporal_trend(df, ax):
     return ax
 
 # ============================================================================
+# НОВЫЕ ФУНКЦИИ ДЛЯ ГРАФИКОВ (ПРЕДЛОЖЕННЫЕ УЛУЧШЕНИЯ)
+# ============================================================================
+def plot_b_site_statistics(df):
+    """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)"""
+    stats_df = df.groupby('B_element')['x_boundary'].agg(['mean', 'median', 'count', 'std']).round(3)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Столбчатая диаграмма со стандартным отклонением
+    b_sites = stats_df.index
+    x_pos = np.arange(len(b_sites))
+    
+    ax1.bar(x_pos, stats_df['mean'], yerr=stats_df['std'], 
+            capsize=5, color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
+            edgecolor='black', linewidth=0.5)
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels(b_sites)
+    ax1.set_ylabel('Mean x(boundary)')
+    ax1.set_title('Average Solubility by B-site')
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Количество образцов
+    ax2.bar(x_pos, stats_df['count'], 
+            color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
+            edgecolor='black', linewidth=0.5)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(b_sites)
+    ax2.set_ylabel('Number of samples')
+    ax2.set_title('Sample Count by B-site')
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    return fig, stats_df
+
+def plot_top_dopants_violin(df):
+    """График 11: Violin plot для топ-10 допантов по растворимости"""
+    # Берем топ-10 допантов по медиане
+    dopant_stats = df.groupby('D_element')['x_boundary'].agg(['median', 'count'])
+    top_dopants = dopant_stats.nlargest(10, 'median').index
+    plot_df = df[df['D_element'].isin(top_dopants)].dropna(subset=['x_boundary'])
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Порядок для отображения
+    order = dopant_stats.loc[top_dopants].sort_values('median', ascending=False).index
+    
+    # Violin plot
+    sns.violinplot(data=plot_df, x='D_element', y='x_boundary', 
+                   order=order, ax=ax, cut=0)
+    
+    # Добавляем количество образцов
+    for i, d in enumerate(order):
+        count = dopant_stats.loc[d, 'count']
+        ax.text(i, ax.get_ylim()[1]*0.95, f'n={int(count)}', 
+                ha='center', fontsize=9)
+    
+    ax.set_xlabel('Dopant Element')
+    ax.set_ylabel('x(boundary)')
+    ax.set_title('Top 10 Dopants by Solubility (Violin Plot)')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    return fig
+
+def plot_xmax_vs_boundary_histogram(df):
+    """График 12: Гистограмма распределения (x_max - x_boundary)/x_boundary"""
+    valid = df.dropna(subset=['x_max', 'x_boundary'])
+    diff = (valid['x_max'] - valid['x_boundary']) / valid['x_boundary']
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    n, bins, patches = ax.hist(diff, bins=20, edgecolor='black', 
+                                color='skyblue', alpha=0.7)
+    ax.axvline(x=0, color='red', linestyle='--', linewidth=2, 
+               label='x(max) = x(boundary)')
+    ax.axvline(x=diff.median(), color='blue', linestyle=':', linewidth=2,
+               label=f'Median = {diff.median():.3f}')
+    
+    # Добавляем проценты
+    within_10pct = (abs(diff) < 0.1).mean()
+    ax.text(0.05, 0.95, f'Within ±10%: {within_10pct:.1%}', 
+            transform=ax.transAxes, fontsize=10,
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    ax.set_xlabel('(x_max - x_boundary) / x_boundary')
+    ax.set_ylabel('Frequency')
+    ax.set_title('Distribution of Conductivity Maximum Position')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    return fig
+
+def plot_correlation_heatmap(df):
+    """График 13: Тепловая карта корреляций"""
+    features = ['dr', 'dr_rel', 'tolerance_factor', 'x_boundary', 'x_max']
+    corr_df = df[features].dropna()
+    
+    if len(corr_df) < 5:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data for correlation', 
+                ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    # Расчет корреляций
+    pearson_corr = corr_df.corr(method='pearson')
+    spearman_corr = corr_df.corr(method='spearman')
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Pearson
+    sns.heatmap(pearson_corr, annot=True, fmt='.2f', cmap='coolwarm', 
+                center=0, vmin=-1, vmax=1, ax=ax1,
+                cbar_kws={'label': 'Pearson r'})
+    ax1.set_title('Pearson Correlations')
+    
+    # Spearman
+    sns.heatmap(spearman_corr, annot=True, fmt='.2f', cmap='coolwarm', 
+                center=0, vmin=-1, vmax=1, ax=ax2,
+                cbar_kws={'label': 'Spearman ρ'})
+    ax2.set_title('Spearman Correlations')
+    
+    plt.tight_layout()
+    return fig
+
+def plot_publication_matrix(df):
+    """График 14: Тепловая карта количества публикаций по B-D парам"""
+    pub_matrix = df.groupby(['B_element', 'D_element']).size().unstack(fill_value=0)
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    sns.heatmap(pub_matrix, annot=True, fmt='d', cmap='YlOrRd', ax=ax,
+                cbar_kws={'label': 'Number of publications'},
+                linewidths=0.5, linecolor='gray')
+    
+    ax.set_xlabel('Dopant (D)')
+    ax.set_ylabel('B-site (B)')
+    ax.set_title('Research Intensity: B-D Combinations')
+    
+    plt.tight_layout()
+    return fig, pub_matrix
+
+def plot_distribution_kde(df):
+    """График 15: Распределение x_boundary (гистограмма + KDE по B)"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Общее распределение
+    ax1.hist(df['x_boundary'].dropna(), bins=20, edgecolor='black', 
+             alpha=0.7, color='gray', density=True)
+    sns.kdeplot(data=df['x_boundary'].dropna(), ax=ax1, color='red', 
+                linewidth=2, label='KDE')
+    ax1.set_xlabel('x(boundary)')
+    ax1.set_ylabel('Density')
+    ax1.set_title('Overall Distribution of Solubility Limits')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # По B-элементам
+    for b_element in df['B_element'].unique():
+        data = df[df['B_element'] == b_element]['x_boundary'].dropna()
+        if len(data) > 1:
+            sns.kdeplot(data=data, label=b_element, ax=ax2, 
+                        linewidth=2, color=B_COLORS.get(b_element, 'gray'))
+    
+    ax2.set_xlabel('x(boundary)')
+    ax2.set_ylabel('Density')
+    ax2.set_title('Distribution by B-site')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
+
+def plot_shift_vs_dr_bubble(df):
+    """График 16: Пузырьковая диаграмма зависимости смещения от Δr"""
+    valid = df.dropna(subset=['x_max', 'x_boundary', 'dr', 'tolerance_factor'])
+    
+    if len(valid) < 3:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
+        return fig
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Пузырьковая диаграмма
+    scatter = ax.scatter(
+        valid['dr'],
+        valid['x_max'] - valid['x_boundary'],
+        s=valid['x_boundary'] * 1000,  # размер = растворимость
+        c=valid['tolerance_factor'],   # цвет = tolerance factor
+        alpha=0.6,
+        cmap='coolwarm',
+        edgecolors='black',
+        linewidth=0.5
+    )
+    
+    ax.axhline(y=0, color='red', linestyle='--', alpha=0.5, linewidth=2)
+    
+    # Добавить подписи для точек с большим отклонением
+    valid_sorted = valid.nlargest(5, 'x_diff_norm')
+    for idx, row in valid_sorted.iterrows():
+        ax.annotate(f"{row['B_element']}-{row['D_element']}", 
+                    (row['dr'], row['x_max'] - row['x_boundary']),
+                    fontsize=8, ha='center')
+    
+    ax.set_xlabel('Δr (Å)')
+    ax.set_ylabel('x_max - x_boundary')
+    ax.set_title('Shift of Conductivity Maximum from Solubility Limit\n(Bubble size = x_boundary)')
+    
+    plt.colorbar(scatter, ax=ax, label='Tolerance Factor')
+    ax.grid(True, alpha=0.3)
+    
+    return fig
+
+def plot_tolerance_evolution(df):
+    """График 17: Эволюция tolerance factor с допированием"""
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Выбираем до 10 случайных систем для наглядности
+    sample_size = min(10, len(df))
+    sampled_df = df.sample(sample_size, random_state=42) if sample_size > 0 else df
+    
+    for idx, row in sampled_df.iterrows():
+        result = calculate_t_series(row)
+        if result:
+            x_vals, t_vals = result
+            label = f"{row['B_element']}-{row['D_element']}"
+            if not pd.isna(row.get('x_boundary')):
+                # Отмечаем точку границы растворимости
+                boundary_idx = np.argmin(np.abs(x_vals - row['x_boundary']))
+                ax.plot(x_vals, t_vals, linewidth=2, alpha=0.7, label=label)
+                ax.plot(x_vals[boundary_idx], t_vals[boundary_idx], 'ro', 
+                       markersize=8, alpha=0.8)
+            else:
+                ax.plot(x_vals, t_vals, linewidth=2, alpha=0.7, label=label)
+    
+    ax.axhline(y=1.0, color='black', linestyle='--', alpha=0.5, 
+               label='Ideal cubic (t=1)', linewidth=2)
+    ax.set_xlabel('Dopant concentration x')
+    ax.set_ylabel('Tolerance Factor')
+    ax.set_title('Evolution of Tolerance Factor with Doping\n(Red dots = solubility limit)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
+
+def plot_critical_dr_threshold(df):
+    """График 18: Критический Δr для образования примесей"""
+    valid = df.dropna(subset=['dr', 'has_impurity']).sort_values('dr')
+    
+    if len(valid) < 5:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
+        return fig
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Кумулятивная доля примесей
+    x_vals = valid['dr'].values
+    y_vals = valid['has_impurity'].astype(int).cumsum() / np.arange(1, len(valid)+1)
+    
+    ax.plot(x_vals, y_vals, 'b-', linewidth=2, label='Cumulative fraction')
+    ax.fill_between(x_vals, 0, y_vals, alpha=0.3, color='blue')
+    
+    # Находим точку перегиба (порог)
+    y_diff = np.diff(y_vals)
+    if len(y_diff) > 5:
+        # Сглаживаем для поиска пика
+        from scipy.ndimage import gaussian_filter1d
+        y_diff_smooth = gaussian_filter1d(y_diff, sigma=2)
+        threshold_idx = np.argmax(y_diff_smooth[:len(y_diff_smooth)//2])  # ищем в первой половине
+        if threshold_idx < len(x_vals)-1:
+            ax.axvline(x=x_vals[threshold_idx], color='red', linestyle='--', 
+                       linewidth=2, label=f'Threshold Δr ≈ {x_vals[threshold_idx]:.3f} Å')
+    
+    ax.set_xlabel('Δr (Å)')
+    ax.set_ylabel('Cumulative fraction with impurities')
+    ax.set_title('Critical Radius Difference for Impurity Formation')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    return fig
+
+def plot_dopant_comparison_boxplot(df, selected_dopant):
+    """График 19: Сравнение одного допанта на разных B-сайтах"""
+    plot_df = df[df['D_element'] == selected_dopant].dropna(subset=['x_boundary'])
+    
+    if len(plot_df) < 2:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, f'Insufficient data for {selected_dopant}', 
+                ha='center', va='center')
+        return fig
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Boxplot
+    bp = ax.boxplot([plot_df[plot_df['B_element'] == b]['x_boundary'] 
+                     for b in plot_df['B_element'].unique()],
+                    labels=plot_df['B_element'].unique(),
+                    patch_artist=True)
+    
+    # Раскрашиваем боксы
+    for i, b in enumerate(plot_df['B_element'].unique()):
+        bp['boxes'][i].set_facecolor(B_COLORS.get(b, 'lightgray'))
+        bp['boxes'][i].set_alpha(0.7)
+    
+    # Наложить точки (strip plot)
+    for b in plot_df['B_element'].unique():
+        data = plot_df[plot_df['B_element'] == b]['x_boundary']
+        x_pos = list(plot_df['B_element'].unique()).index(b) + 1
+        # Добавляем случайный шум для x-позиции
+        x_jittered = np.random.normal(x_pos, 0.05, len(data))
+        ax.scatter(x_jittered, data, color='red', s=50, 
+                   alpha=0.5, zorder=3)
+    
+    ax.set_xlabel('B-site')
+    ax.set_ylabel(f'x(boundary) for {selected_dopant} doping')
+    ax.set_title(f'Solubility of {selected_dopant} on Different B-sites')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    return fig
+
+def plot_feature_importance(df):
+    """График 20: Важность признаков Random Forest"""
+    importance_df, r2 = feature_importance_analysis(df)
+    
+    if importance_df is None:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data for feature importance', 
+                ha='center', va='center')
+        return fig, None
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Горизонтальная столбчатая диаграмма
+    y_pos = np.arange(len(importance_df))
+    ax.barh(y_pos, importance_df['importance'], 
+            color='steelblue', edgecolor='black', linewidth=0.5)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(importance_df['feature'])
+    ax.set_xlabel('Feature Importance')
+    ax.set_title(f'Random Forest: Factors Affecting Solubility\n(R² = {r2:.3f})')
+    ax.invert_yaxis()  # Чтобы самое важное было сверху
+    ax.grid(True, alpha=0.3, axis='x')
+    
+    # Добавляем значения на концах столбцов
+    for i, v in enumerate(importance_df['importance']):
+        ax.text(v + 0.01, i, f'{v:.3f}', va='center')
+    
+    plt.tight_layout()
+    return fig, importance_df
+
+def plot_goldschmidt_bubble(df):
+    """График 21: t-Δr фазовая диаграмма с пузырьками"""
+    valid = df.dropna(subset=['tolerance_factor', 'dr', 'x_boundary'])
+    
+    if len(valid) < 3:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
+        return fig
+    
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Основные точки
+    scatter = ax.scatter(
+        valid['tolerance_factor'],
+        valid['dr'],
+        s=valid['x_boundary'] * 2000,  # размер = растворимость
+        c=valid['year'] if 'year' in valid.columns and valid['year'].notna().any() else valid['x_boundary'],
+        alpha=0.6,
+        cmap='viridis',
+        edgecolors='black',
+        linewidth=0.5
+    )
+    
+    # Выделяем точки с примесями
+    impurity_points = valid[valid['has_impurity']]
+    if len(impurity_points) > 0:
+        ax.scatter(
+            impurity_points['tolerance_factor'],
+            impurity_points['dr'],
+            s=impurity_points['x_boundary'] * 2000,
+            facecolors='none',
+            edgecolors='red',
+            linewidth=2,
+            label='With impurities'
+        )
+    
+    # Добавляем подписи для некоторых точек
+    for idx, row in valid.nlargest(5, 'x_boundary').iterrows():
+        ax.annotate(f"{row['B_element']}-{row['D_element']}", 
+                    (row['tolerance_factor'], row['dr']),
+                    fontsize=8, ha='center')
+    
+    ax.axvline(x=1.0, color='gray', linestyle='--', alpha=0.5, linewidth=2)
+    ax.set_xlabel('Tolerance Factor')
+    ax.set_ylabel('Δr (Å)')
+    ax.set_title('Goldschmidt Diagram with Solubility Information\n(Bubble size = x_boundary)')
+    
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('Year' if 'year' in valid.columns and valid['year'].notna().any() else 'x(boundary)')
+    
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    return fig
+
+# ============================================================================
 # ОСНОВНОЕ STREAMLIT-ПРИЛОЖЕНИЕ
 # ============================================================================
 def main():
@@ -626,6 +1114,7 @@ def main():
             - **x(max)**: Concentration at max conductivity
             - **doi**: DOI reference
             """)
+            return
         
         st.markdown("---")
         st.header("📊 Plot Settings")
@@ -638,106 +1127,198 @@ def main():
         st.markdown("---")
         st.header("🔍 Filters")
         
-    # Основная область
-    if uploaded_file is not None:
+        # Загрузка и обработка данных
         try:
-            # Загрузка данных
-            df = pd.read_excel(uploaded_file)
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
             
             with st.spinner("Processing data..."):
-                # Обработка данных
                 df_processed = process_data(df)
                 
-                # Применение фильтров из боковой панели
-                with st.sidebar:
-                    # Фильтр по B-элементу
-                    b_elements = ['All'] + sorted(df_processed['B_element'].unique().tolist())
+                # Фильтр по B-элементу
+                if 'B_element' in df_processed.columns:
                     selected_b = st.multiselect(
                         "B-site elements",
                         options=sorted(df_processed['B_element'].unique()),
                         default=sorted(df_processed['B_element'].unique())
                     )
-                    
-                    # Фильтр по D-элементу
+                else:
+                    selected_b = []
+                    st.error("B_element column not found")
+                
+                # Фильтр по D-элементу
+                if 'D_element' in df_processed.columns:
                     selected_d = st.multiselect(
                         "Dopant elements",
                         options=sorted(df_processed['D_element'].unique()),
                         default=sorted(df_processed['D_element'].unique())
                     )
-                    
-                    # Фильтр по наличию примесей
-                    impurity_filter = st.radio(
-                        "Impurity phases",
-                        options=['All', 'With impurities', 'Without impurities']
-                    )
+                else:
+                    selected_d = []
+                    st.error("D_element column not found")
+                
+                # Фильтр по наличию примесей
+                impurity_filter = st.radio(
+                    "Impurity phases",
+                    options=['All', 'With impurities', 'Without impurities']
+                )
                 
                 # Применяем фильтры
                 filtered_df = df_processed.copy()
                 
-                if selected_b:
+                if selected_b and 'B_element' in filtered_df.columns:
                     filtered_df = filtered_df[filtered_df['B_element'].isin(selected_b)]
                 
-                if selected_d:
+                if selected_d and 'D_element' in filtered_df.columns:
                     filtered_df = filtered_df[filtered_df['D_element'].isin(selected_d)]
                 
-                if impurity_filter == 'With impurities':
+                if impurity_filter == 'With impurities' and 'has_impurity' in filtered_df.columns:
                     filtered_df = filtered_df[filtered_df['has_impurity'] == True]
-                elif impurity_filter == 'Without impurities':
+                elif impurity_filter == 'Without impurities' and 'has_impurity' in filtered_df.columns:
                     filtered_df = filtered_df[filtered_df['has_impurity'] == False]
+                
+        except Exception as e:
+            st.error(f"Error loading file: {str(e)}")
+            return
+    
+    # Основная область
+    if uploaded_file is not None and len(filtered_df) > 0:
+        # Статистика
+        st.subheader("📈 Data Overview")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total entries", len(filtered_df))
+        with col2:
+            st.metric("Unique B-site", filtered_df['B_element'].nunique() if 'B_element' in filtered_df.columns else 0)
+        with col3:
+            st.metric("Unique Dopants", filtered_df['D_element'].nunique() if 'D_element' in filtered_df.columns else 0)
+        with col4:
+            imp_count = filtered_df['has_impurity'].sum() if 'has_impurity' in filtered_df.columns else 0
+            st.metric("With impurities", imp_count)
+        
+        # ============================================================================
+        # НОВЫЕ МЕТРИКИ И СТАТИСТИКА (Предложение 1, 2, 3)
+        # ============================================================================
+        st.markdown("---")
+        st.subheader("📊 Quick Statistics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Solubility Statistics by B-site**")
+            if 'x_boundary' in filtered_df.columns and 'B_element' in filtered_df.columns:
+                b_stats = filtered_df.groupby('B_element')['x_boundary'].agg(['mean', 'median', 'count', 'std']).round(3)
+                st.dataframe(b_stats, use_container_width=True)
+        
+        with col2:
+            st.markdown("**Top 5 Dopants by Median Solubility**")
+            if 'x_boundary' in filtered_df.columns and 'D_element' in filtered_df.columns:
+                d_stats = filtered_df.groupby('D_element')['x_boundary'].agg(['median', 'count']).round(3)
+                top_d = d_stats.nlargest(5, 'median')
+                st.dataframe(top_d, use_container_width=True)
+        
+        with col3:
+            st.markdown("**Conductivity Maximum Position**")
+            if 'x_max' in filtered_df.columns and 'x_boundary' in filtered_df.columns:
+                valid = filtered_df.dropna(subset=['x_max', 'x_boundary'])
+                if len(valid) > 0:
+                    diff = (valid['x_max'] - valid['x_boundary']) / valid['x_boundary']
+                    within_10pct = (abs(diff) < 0.1).mean()
+                    st.metric("Within ±10% of boundary", f"{within_10pct:.1%}")
+                    st.metric("Median relative position", f"{diff.median():.3f}")
+                    st.metric("Samples with x(max) > x(boundary)", f"{(diff > 0).mean():.1%}")
+        
+        # Таблица с данными
+        with st.expander("📋 View processed data"):
+            st.dataframe(filtered_df, use_container_width=True)
             
-            # Статистика
-            st.subheader("📈 Data Overview")
-            col1, col2, col3, col4 = st.columns(4)
+            # Кнопка для скачивания
+            csv = filtered_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Download processed data as CSV",
+                csv,
+                "perovskite_data_processed.csv",
+                "text/csv"
+            )
+        
+        st.markdown("---")
+        
+        # ============================================================================
+        # ВКЛАДКИ С ГРАФИКАМИ
+        # ============================================================================
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📊 Basic Statistics", 
+            "🔬 Solubility Analysis", 
+            "⚡ Conductivity Analysis",
+            "📈 Advanced Visualization",
+            "🤖 ML Insights"
+        ])
+        
+        # ============================================================================
+        # ВКЛАДКА 1: BASIC STATISTICS
+        # ============================================================================
+        with tab1:
+            st.subheader("Basic Statistical Analysis")
+            
+            # График 10: Статистика по B-элементам
+            if len(filtered_df) > 0:
+                fig, stats_df = plot_b_site_statistics(filtered_df)
+                st.pyplot(fig)
+                plt.close(fig)
+            
+            col1, col2 = st.columns(2)
             
             with col1:
-                st.metric("Total entries", len(filtered_df))
+                # График 12: Гистограмма распределения x_max относительно x_boundary
+                if 'x_max' in filtered_df.columns and 'x_boundary' in filtered_df.columns:
+                    fig = plot_xmax_vs_boundary_histogram(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+            
             with col2:
-                st.metric("Unique B-site", filtered_df['B_element'].nunique())
-            with col3:
-                st.metric("Unique Dopants", filtered_df['D_element'].nunique())
-            with col4:
-                imp_count = filtered_df['has_impurity'].sum() if 'has_impurity' in filtered_df.columns else 0
-                st.metric("With impurities", imp_count)
+                # График 15: Распределение x_boundary
+                if 'x_boundary' in filtered_df.columns:
+                    fig = plot_distribution_kde(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
             
-            # Таблица с данными
-            with st.expander("📋 View processed data"):
-                st.dataframe(filtered_df, use_container_width=True)
-                
-                # Кнопка для скачивания
-                csv = filtered_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download processed data as CSV",
-                    csv,
-                    "perovskite_data_processed.csv",
-                    "text/csv"
-                )
+            # График 13: Корреляционная матрица
+            if len(filtered_df) > 0:
+                fig = plot_correlation_heatmap(filtered_df)
+                st.pyplot(fig)
+                plt.close(fig)
             
-            st.markdown("---")
+            # Детальная корреляция с p-value
+            st.subheader("Detailed Correlations with p-values")
+            features = ['dr', 'dr_rel', 'tolerance_factor', 'x_boundary', 'x_max']
+            available_features = [f for f in features if f in filtered_df.columns]
+            if len(available_features) >= 2:
+                corr_df = calculate_correlations(filtered_df, available_features)
+                if len(corr_df) > 0:
+                    st.dataframe(corr_df, use_container_width=True)
+        
+        # ============================================================================
+        # ВКЛАДКА 2: SOLUBILITY ANALYSIS
+        # ============================================================================
+        with tab2:
+            st.subheader("Solubility Limit Analysis")
             
-            # Выбор графиков
-            st.subheader("📊 Visualization")
-            
-            plot_types = {
-                "Solubility vs Radius Difference": plot_solubility_vs_dr,
-                "Solubility vs Tolerance Factor": plot_tolerance_factor,
-                "Δr Heatmap with x(boundary)": lambda df, ax: None,  # специальная обработка
-                "x(max) vs x(boundary)": plot_xmax_vs_xboundary,
-                "x(max) vs Tolerance Factor": plot_xmax_vs_tolerance,
-                "Relative Position of Maximum": plot_relative_position,
-                "PCA Analysis": lambda df, ax: None,  # специальная обработка
-                "Impurity Phase Diagram (t-Δr)": plot_impurity_phase_diagram,
-                "Temporal Trends": plot_temporal_trend,
-            }
-            
-            selected_plots = st.multiselect(
-                "Select plots to display",
-                options=list(plot_types.keys()),
-                default=["Solubility vs Radius Difference", "x(max) vs x(boundary)"]
+            # Выбор графиков для отображения
+            solubility_plots = st.multiselect(
+                "Select solubility plots to display",
+                options=[
+                    "Solubility vs Radius Difference",
+                    "Solubility vs Tolerance Factor",
+                    "Δr Heatmap with x(boundary)",
+                    "Top Dopants Violin Plot",
+                    "Critical Δr Threshold",
+                    "Research Intensity Matrix"
+                ],
+                default=["Solubility vs Radius Difference", "Δr Heatmap with x(boundary)"]
             )
             
-            # Создаем сетку графиков
-            if selected_plots:
-                n_plots = len(selected_plots)
+            n_plots = len(solubility_plots)
+            if n_plots > 0:
                 n_cols = min(2, n_plots)
                 n_rows = (n_plots + n_cols - 1) // n_cols
                 
@@ -746,83 +1327,233 @@ def main():
                     axes = np.array([axes])
                 axes = axes.flatten()
                 
-                for i, plot_name in enumerate(selected_plots):
-                    ax = axes[i]
+                plot_idx = 0
+                for plot_name in solubility_plots:
+                    ax = axes[plot_idx]
                     
-                    if plot_name == "Δr Heatmap with x(boundary)":
-                        # Специальная обработка для тепловой карты
-                        plt.close(fig)  # закрываем текущую фигуру
-                        heatmap_fig = plot_heatmap_dr(filtered_df)
-                        st.pyplot(heatmap_fig)
-                        continue
+                    if plot_name == "Solubility vs Radius Difference":
+                        if 'dr' in filtered_df.columns and 'x_boundary' in filtered_df.columns:
+                            plot_solubility_vs_dr(filtered_df, ax)
+                        else:
+                            ax.text(0.5, 0.5, 'Required data missing', ha='center', va='center')
                     
-                    elif plot_name == "PCA Analysis":
-                        # Специальная обработка для PCA
-                        plt.close(fig)
-                        pca_fig = plot_pca(filtered_df)
-                        st.pyplot(pca_fig)
-                        continue
+                    elif plot_name == "Solubility vs Tolerance Factor":
+                        if 'tolerance_factor' in filtered_df.columns and 'x_boundary' in filtered_df.columns:
+                            plot_tolerance_factor(filtered_df, ax)
+                        else:
+                            ax.text(0.5, 0.5, 'Required data missing', ha='center', va='center')
                     
-                    else:
-                        # Обычные графики
-                        plot_func = plot_types[plot_name]
-                        plot_func(filtered_df, ax)
-                        
-                        # Применяем настройки
+                    elif plot_name == "Top Dopants Violin Plot":
+                        if 'x_boundary' in filtered_df.columns and 'D_element' in filtered_df.columns:
+                            # Временно сохраняем и показываем отдельно
+                            plt.close(fig)
+                            violin_fig = plot_top_dopants_violin(filtered_df)
+                            st.pyplot(violin_fig)
+                            plt.close(violin_fig)
+                            plot_idx -= 1  # не занимаем место в сетке
+                    
+                    elif plot_name == "Critical Δr Threshold":
+                        if 'dr' in filtered_df.columns and 'has_impurity' in filtered_df.columns:
+                            # Временно сохраняем и показываем отдельно
+                            plt.close(fig)
+                            threshold_fig = plot_critical_dr_threshold(filtered_df)
+                            st.pyplot(threshold_fig)
+                            plt.close(threshold_fig)
+                            plot_idx -= 1
+                    
+                    elif plot_name == "Research Intensity Matrix":
+                        if 'B_element' in filtered_df.columns and 'D_element' in filtered_df.columns:
+                            # Временно сохраняем и показываем отдельно
+                            plt.close(fig)
+                            matrix_fig, pub_matrix = plot_publication_matrix(filtered_df)
+                            st.pyplot(matrix_fig)
+                            plt.close(matrix_fig)
+                            st.dataframe(pub_matrix, use_container_width=True)
+                            plot_idx -= 1
+                    
+                    # Применяем настройки
+                    if not show_grid:
+                        ax.grid(False)
+                    if not show_legend:
+                        ax.legend().remove()
+                    
+                    plot_idx += 1
+                
+                # Убираем пустые подграфики
+                for j in range(plot_idx, len(axes)):
+                    fig.delaxes(axes[j])
+                
+                if plot_idx > 0:
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+            
+            # График 3: Тепловая карта Δr (отдельно, если выбрана)
+            if "Δr Heatmap with x(boundary)" in solubility_plots:
+                if 'dr' in filtered_df.columns and 'B_element' in filtered_df.columns and 'D_element' in filtered_df.columns:
+                    heatmap_fig = plot_heatmap_dr(filtered_df)
+                    st.pyplot(heatmap_fig)
+                    plt.close(heatmap_fig)
+        
+        # ============================================================================
+        # ВКЛАДКА 3: CONDUCTIVITY ANALYSIS
+        # ============================================================================
+        with tab3:
+            st.subheader("Conductivity Maximum Analysis")
+            
+            if 'x_max' in filtered_df.columns:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # График 4: x(max) vs x(boundary)
+                    if 'x_boundary' in filtered_df.columns:
+                        fig, ax = plt.subplots(figsize=(8, 6))
+                        plot_xmax_vs_xboundary(filtered_df, ax)
                         if not show_grid:
                             ax.grid(False)
                         if not show_legend:
                             ax.legend().remove()
+                        st.pyplot(fig)
+                        plt.close(fig)
                 
-                # Если есть обычные графики для отображения
-                if any(p not in ["Δr Heatmap with x(boundary)", "PCA Analysis"] for p in selected_plots):
-                    # Убираем пустые подграфики
-                    for j in range(i+1, len(axes)):
-                        fig.delaxes(axes[j])
-                    
-                    plt.tight_layout()
+                with col2:
+                    # График 5: x(max) vs tolerance factor
+                    if 'tolerance_factor' in filtered_df.columns:
+                        fig, ax = plt.subplots(figsize=(8, 6))
+                        plot_xmax_vs_tolerance(filtered_df, ax)
+                        if not show_grid:
+                            ax.grid(False)
+                        if not show_legend:
+                            ax.legend().remove()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                
+                # График 6: Относительное положение
+                if 'x_rel_max' in filtered_df.columns and 'dr_rel' in filtered_df.columns:
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    plot_relative_position(filtered_df, ax)
+                    if not show_grid:
+                        ax.grid(False)
+                    if not show_legend:
+                        ax.legend().remove()
                     st.pyplot(fig)
-            
-            # Дополнительная аналитика
-            st.markdown("---")
-            st.subheader("🔬 Insights")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Top combinations by solubility:**")
-                if 'x_boundary' in filtered_df.columns:
-                    top_sol = filtered_df.nlargest(5, 'x_boundary')[
-                        ['B_element', 'D_element', 'x_boundary', 'impurity']
-                    ]
-                    st.dataframe(top_sol, use_container_width=True)
-            
-            with col2:
-                st.markdown("**Correlations with descriptors:**")
-                desc_cols = ['dr', 'dr_rel', 'tolerance_factor', 'x_boundary', 'x_max']
-                desc_df = filtered_df[desc_cols].dropna()
+                    plt.close(fig)
                 
-                if len(desc_df) > 1:
-                    corr = desc_df.corr()['x_boundary'].drop('x_boundary').sort_values(ascending=False)
-                    
-                    corr_df = pd.DataFrame({
-                        'Descriptor': corr.index,
-                        'Correlation with x(boundary)': corr.values
-                    })
-                    
-                    # Форматирование
-                    corr_df['Correlation with x(boundary)'] = corr_df['Correlation with x(boundary)'].apply(
-                        lambda x: f'{x:.3f}'
-                    )
-                    
-                    st.dataframe(corr_df, use_container_width=True)
+                # График 16: Пузырьковая диаграмма смещения
+                st.subheader("Shift Analysis")
+                fig = plot_shift_vs_dr_bubble(filtered_df)
+                st.pyplot(fig)
+                plt.close(fig)
             
-        except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
-            st.exception(e)
+            else:
+                st.info("x_max data not available in the dataset")
+        
+        # ============================================================================
+        # ВКЛАДКА 4: ADVANCED VISUALIZATION
+        # ============================================================================
+        with tab4:
+            st.subheader("Advanced Visualization")
+            
+            adv_plots = st.multiselect(
+                "Select advanced plots",
+                options=[
+                    "PCA Analysis",
+                    "Impurity Phase Diagram (t-Δr)",
+                    "Temporal Trends",
+                    "Tolerance Factor Evolution",
+                    "Goldschmidt Bubble Diagram",
+                    "Dopant Comparison by B-site"
+                ],
+                default=["PCA Analysis", "Goldschmidt Bubble Diagram"]
+            )
+            
+            for plot_name in adv_plots:
+                if plot_name == "PCA Analysis":
+                    fig = plot_pca(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                
+                elif plot_name == "Impurity Phase Diagram (t-Δr)":
+                    if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns:
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        plot_impurity_phase_diagram(filtered_df, ax)
+                        if not show_grid:
+                            ax.grid(False)
+                        if not show_legend:
+                            ax.legend().remove()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                
+                elif plot_name == "Temporal Trends":
+                    if 'year' in filtered_df.columns and 'x_boundary' in filtered_df.columns:
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        plot_temporal_trend(filtered_df, ax)
+                        if not show_grid:
+                            ax.grid(False)
+                        if not show_legend:
+                            ax.legend().remove()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                
+                elif plot_name == "Tolerance Factor Evolution":
+                    fig = plot_tolerance_evolution(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                
+                elif plot_name == "Goldschmidt Bubble Diagram":
+                    fig = plot_goldschmidt_bubble(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                
+                elif plot_name == "Dopant Comparison by B-site":
+                    if 'D_element' in filtered_df.columns and 'B_element' in filtered_df.columns:
+                        selected_d = st.selectbox(
+                            "Select dopant for comparison",
+                            options=sorted(filtered_df['D_element'].unique())
+                        )
+                        fig = plot_dopant_comparison_boxplot(filtered_df, selected_d)
+                        st.pyplot(fig)
+                        plt.close(fig)
+        
+        # ============================================================================
+        # ВКЛАДКА 5: ML INSIGHTS
+        # ============================================================================
+        with tab5:
+            st.subheader("Machine Learning Insights")
+            
+            # График 20: Важность признаков
+            st.markdown("**Feature Importance Analysis (Random Forest)**")
+            fig, importance_df = plot_feature_importance(filtered_df)
+            st.pyplot(fig)
+            plt.close(fig)
+            
+            if importance_df is not None:
+                st.dataframe(importance_df, use_container_width=True)
+            
+            # Статистика по публикациям
+            st.markdown("---")
+            st.subheader("Publication Analysis")
+            
+            if 'doi' in filtered_df.columns:
+                st.metric("Total publications", filtered_df['doi'].nunique())
+            
+            if 'year' in filtered_df.columns:
+                year_stats = filtered_df['year'].dropna()
+                if len(year_stats) > 0:
+                    st.metric("Year range", f"{int(year_stats.min())} - {int(year_stats.max())}")
+                    st.metric("Median year", int(year_stats.median()))
+                    
+                    # Гистограмма по годам
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    ax.hist(year_stats, bins=20, edgecolor='black', alpha=0.7)
+                    ax.set_xlabel('Year')
+                    ax.set_ylabel('Number of publications')
+                    ax.set_title('Publication Year Distribution')
+                    ax.grid(True, alpha=0.3)
+                    st.pyplot(fig)
+                    plt.close(fig)
     
     else:
-        # Плейсхолдер при отсутствии файла
         st.info("👈 Please upload an Excel file to begin analysis")
         
         # Показываем пример данных

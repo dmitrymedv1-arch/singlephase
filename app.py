@@ -207,10 +207,7 @@ def process_data(df):
     # Создаем маппинг на основе первых строк или стандартных названий
     column_mapping = {}
     
-    # Пробуем определить колонки по их содержимому или позиции
-    # Обычно в таких таблицах порядок колонок фиксирован:
-    # A, B, D, x(inv,in), x(inv,end), x(boundary), Impurity phase(s), x(max), doi
-    
+    # Ожидаемый порядок колонок
     expected_order = [
         'A_element', 'B_element', 'D_element', 
         'x_inv_in', 'x_inv_end', 'x_boundary', 
@@ -266,9 +263,18 @@ def process_data(df):
             }, inplace=True)
     
     # Заполняем пропуски
-    for col in ['x_boundary', 'x_max']:
+    for col in ['x_inv_in', 'x_inv_end', 'x_boundary', 'x_max']:
         if col in df_processed.columns:
             df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
+    
+    # ВАЖНО: Обработка прочерков в x_boundary
+    # Если x_boundary - прочерк (NaN после конвертации), но есть x_inv_end,
+    # то используем x_inv_end как минимальную границу растворимости
+    if 'x_boundary' in df_processed.columns and 'x_inv_end' in df_processed.columns:
+        # Создаем колонку с флагом, что это минимальная оценка
+        df_processed['x_boundary_is_min'] = df_processed['x_boundary'].isna()
+        # Заполняем прочерки значением x_inv_end
+        df_processed['x_boundary'] = df_processed['x_boundary'].fillna(df_processed['x_inv_end'])
     
     # Обработка примесей
     if 'impurity' in df_processed.columns:
@@ -314,9 +320,19 @@ def process_data(df):
 def calculate_correlations(df, features):
     """Расчет корреляций Пирсона и Спирмена с p-value"""
     corr_data = []
+    
+    # Добавляем флаг для использования только точных значений
+    use_exact_only = st.checkbox("Use only exact values for correlations (exclude lower bound estimates)", 
+                                 value=True)
+    
+    df_filtered = df.copy()
+    if use_exact_only and 'x_boundary_is_min' in df.columns:
+        df_filtered = df[~df['x_boundary_is_min']]
+        st.caption(f"Using {len(df_filtered)} exact values (excluded {len(df) - len(df_filtered)} estimates)")
+    
     for i, f1 in enumerate(features):
         for f2 in features[i+1:]:
-            valid = df[[f1, f2]].dropna()
+            valid = df_filtered[[f1, f2]].dropna()
             if len(valid) > 3:
                 try:
                     pearson_r, pearson_p = stats.pearsonr(valid[f1], valid[f2])
@@ -328,12 +344,12 @@ def calculate_correlations(df, features):
                         'Pearson p': f'{pearson_p:.3e}',
                         'Spearman ρ': f'{spearman_r:.3f}',
                         'Spearman p': f'{spearman_p:.3e}',
-                        'N': len(valid)
+                        'N exact': len(valid)
                     })
                 except:
                     continue
     return pd.DataFrame(corr_data)
-
+    
 def calculate_t_series(row, x_points=50):
     """Рассчитать tolerance factor для ряда x"""
     if pd.isna(row.get('r_B')) or pd.isna(row.get('r_D')):
@@ -355,11 +371,17 @@ def calculate_t_series(row, x_points=50):
 
 def feature_importance_analysis(df):
     """Random Forest анализ важности признаков"""
+    # Используем только точные значения x_boundary
+    if 'x_boundary_is_min' in df.columns:
+        df_exact = df[~df['x_boundary_is_min']]
+    else:
+        df_exact = df
+    
     # Подготовка данных
-    plot_df = df.dropna(subset=['x_boundary', 'dr', 'tolerance_factor', 'B_element'])
+    plot_df = df_exact.dropna(subset=['x_boundary', 'dr', 'tolerance_factor', 'B_element'])
     
     if len(plot_df) < 10:
-        return None, None
+        return None, None, len(plot_df)
     
     # One-hot encoding для B_element
     X = pd.get_dummies(plot_df[['dr', 'tolerance_factor', 'B_element']], 
@@ -379,18 +401,23 @@ def feature_importance_analysis(df):
     # Оценка качества
     r2 = rf.score(X, y)
     
-    return importance_df, r2
+    return importance_df, r2, len(plot_df)
 
 # ============================================================================
 # ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ
 # ============================================================================
 def plot_solubility_vs_dr(df, ax):
-    """График 1: x(boundary) vs Δr"""
+    """График 1: x(boundary) vs Δr с различением точных значений и оценок"""
     for b_element in df['B_element'].unique():
         mask = df['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
-        for _, row in df[mask].iterrows():
+        # Разделяем точные значения и оценки
+        exact_mask = mask & ~df['x_boundary_is_min'] if 'x_boundary_is_min' in df.columns else mask
+        est_mask = mask & df['x_boundary_is_min'] if 'x_boundary_is_min' in df.columns else pd.Series(False, index=df.index)
+        
+        # Точные значения (кружки)
+        for _, row in df[exact_mask].iterrows():
             d_element = row['D_element']
             marker = D_MARKERS.get(d_element, D_MARKERS['default'])
             
@@ -398,63 +425,102 @@ def plot_solubility_vs_dr(df, ax):
                 row['dr'], row['x_boundary'],
                 color=color, marker=marker, s=80,
                 alpha=0.7, edgecolors='black', linewidth=0.5,
-                label=f"{b_element}-{d_element}" if _ == mask.idxmax() else ""
+                label=f"{b_element}-{d_element}" if _ == exact_mask.idxmax() else ""
+            )
+        
+        # Оценки (треугольники с обводкой)
+        for _, row in df[est_mask].iterrows():
+            d_element = row['D_element']
+            ax.scatter(
+                row['dr'], row['x_boundary'],
+                color='none', edgecolors=color, marker='^', s=100,
+                alpha=0.7, linewidth=1.5,
+                label=f"{b_element}-{d_element} (est.)" if _ == est_mask.idxmax() else ""
             )
     
     ax.set_xlabel('Δr = |r(D) - r(B)| (Å)')
     ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Radius Difference')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.set_title('Solubility Limit vs Radius Difference\n(Open triangles = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
 def plot_tolerance_factor(df, ax):
-    """График 2: x(boundary) vs tolerance factor"""
+    """График 2: x(boundary) vs tolerance factor с различением оценок"""
     for b_element in df['B_element'].unique():
         mask = df['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
+        exact_mask = mask & ~df['x_boundary_is_min'] if 'x_boundary_is_min' in df.columns else mask
+        est_mask = mask & df['x_boundary_is_min'] if 'x_boundary_is_min' in df.columns else pd.Series(False, index=df.index)
+        
+        # Точные значения
         ax.scatter(
-            df.loc[mask, 'tolerance_factor'],
-            df.loc[mask, 'x_boundary'],
+            df.loc[exact_mask, 'tolerance_factor'],
+            df.loc[exact_mask, 'x_boundary'],
             color=color, s=100, alpha=0.7,
             edgecolors='black', linewidth=0.5,
-            label=b_element
+            label=f"{b_element} (exact)" if exact_mask.any() else ""
         )
+        
+        # Оценки
+        if est_mask.any():
+            ax.scatter(
+                df.loc[est_mask, 'tolerance_factor'],
+                df.loc[est_mask, 'x_boundary'],
+                color='none', edgecolors=color, marker='^', s=100,
+                alpha=0.7, linewidth=1.5,
+                label=f"{b_element} (est.)"
+            )
     
     ax.axvline(x=1.0, color='red', linestyle='--', alpha=0.5, label='Ideal cubic (t=1)')
     ax.set_xlabel('Tolerance Factor (t) at x = x(boundary)')
     ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Tolerance Factor')
+    ax.set_title('Solubility Limit vs Tolerance Factor\n(Open triangles = lower bound estimates)')
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
 def plot_heatmap_dr(df):
-    """График 3: Тепловая карта Δr"""
-    # Создаем матрицу Δr
+    """График 3: Тепловая карта Δr с указанием точности значений"""
+    # Создаем матрицы
     b_elements = sorted(df['B_element'].unique())
     d_elements = sorted(df['D_element'].unique())
     
     dr_matrix = pd.DataFrame(index=b_elements, columns=d_elements)
     x_boundary_matrix = pd.DataFrame(index=b_elements, columns=d_elements)
+    is_estimate_matrix = pd.DataFrame(index=b_elements, columns=d_elements, data=False)
     
-    for _, row in df.iterrows():
-        dr_matrix.loc[row['B_element'], row['D_element']] = row['dr']
-        x_boundary_matrix.loc[row['B_element'], row['D_element']] = row['x_boundary']
+    # Группируем по B-D парам (берем медиану для множественных значений)
+    for b in b_elements:
+        for d in d_elements:
+            mask = (df['B_element'] == b) & (df['D_element'] == d)
+            if mask.any():
+                dr_matrix.loc[b, d] = df.loc[mask, 'dr'].median()
+                x_boundary_matrix.loc[b, d] = df.loc[mask, 'x_boundary'].median()
+                # Если хотя бы одно значение - оценка, помечаем
+                if 'x_boundary_is_min' in df.columns:
+                    is_estimate_matrix.loc[b, d] = df.loc[mask, 'x_boundary_is_min'].any()
     
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
     
     # Тепловая карта для Δr
     im = ax.imshow(dr_matrix.values.astype(float), cmap='viridis', aspect='auto')
     
-    # Добавляем значения x(boundary) как текст
+    # Добавляем значения x(boundary) как текст с маркировкой оценок
     for i in range(len(b_elements)):
         for j in range(len(d_elements)):
             x_val = x_boundary_matrix.iloc[i, j]
             if not pd.isna(x_val):
-                ax.text(j, i, f'{x_val:.2f}', ha='center', va='center', 
-                       color='white', fontweight='bold')
+                text = f'{x_val:.2f}'
+                if is_estimate_matrix.iloc[i, j]:
+                    text = text + '*'
+                    color = 'yellow'  # звездочка желтым для оценок
+                else:
+                    color = 'white'
+                
+                ax.text(j, i, text, ha='center', va='center', 
+                       color=color, fontweight='bold', fontsize=9)
     
     ax.set_xticks(range(len(d_elements)))
     ax.set_yticks(range(len(b_elements)))
@@ -462,7 +528,7 @@ def plot_heatmap_dr(df):
     ax.set_yticklabels(b_elements)
     ax.set_xlabel('Dopant (D)')
     ax.set_ylabel('B-site cation (B)')
-    ax.set_title('Radius Difference Δr (color) with x(boundary) (text)')
+    ax.set_title('Radius Difference Δr (color) with x(boundary) (text)\n* = lower bound estimate')
     
     plt.colorbar(im, ax=ax, label='Δr (Å)')
     plt.tight_layout()
@@ -645,24 +711,37 @@ def plot_impurity_phase_diagram(df, ax):
     return ax
 
 def plot_temporal_trend(df, ax):
-    """График 9: x(boundary) по годам"""
+    """График 9: x(boundary) по годам с различением оценок"""
     valid = df.dropna(subset=['year', 'x_boundary'])
     
     for b_element in valid['B_element'].unique():
         mask = valid['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
+        exact_mask = mask & ~valid['x_boundary_is_min'] if 'x_boundary_is_min' in valid.columns else mask
+        est_mask = mask & valid['x_boundary_is_min'] if 'x_boundary_is_min' in valid.columns else pd.Series(False, index=valid.index)
+        
+        # Точные значения
         ax.scatter(
-            valid.loc[mask, 'year'],
-            valid.loc[mask, 'x_boundary'],
+            valid.loc[exact_mask, 'year'],
+            valid.loc[exact_mask, 'x_boundary'],
             color=color, s=100, alpha=0.7,
             edgecolors='black', linewidth=0.5,
-            label=b_element
+            label=b_element if exact_mask.any() else ""
         )
+        
+        # Оценки
+        if est_mask.any():
+            ax.scatter(
+                valid.loc[est_mask, 'year'],
+                valid.loc[est_mask, 'x_boundary'],
+                color='none', edgecolors=color, marker='^', s=100,
+                alpha=0.7, linewidth=1.5
+            )
     
     ax.set_xlabel('Year')
     ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit Evolution Over Time')
+    ax.set_title('Solubility Limit Evolution Over Time\n(Open triangles = lower bound estimates)')
     ax.legend()
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
@@ -704,30 +783,82 @@ def plot_b_site_statistics(df):
 
 def plot_top_dopants_violin(df):
     """График 11: Violin plot для топ-10 допантов по растворимости"""
+    # Используем x_boundary (теперь с заполненными прочерками)
+    plot_data = df.dropna(subset=['x_boundary', 'D_element']).copy()
+    
+    if len(plot_data) == 0:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center')
+        return fig
+    
+    # Добавляем информацию о том, является ли значение минимальной оценкой
+    if 'x_boundary_is_min' in plot_data.columns:
+        # Для точек с минимальной оценкой используем другой стиль
+        plot_data['is_estimate'] = plot_data['x_boundary_is_min']
+    else:
+        plot_data['is_estimate'] = False
+    
     # Берем топ-10 допантов по медиане
-    dopant_stats = df.groupby('D_element')['x_boundary'].agg(['median', 'count'])
+    dopant_stats = plot_data.groupby('D_element')['x_boundary'].agg(['median', 'count', 'std'])
     top_dopants = dopant_stats.nlargest(10, 'median').index
-    plot_df = df[df['D_element'].isin(top_dopants)].dropna(subset=['x_boundary'])
+    plot_df = plot_data[plot_data['D_element'].isin(top_dopants)]
     
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 7))
     
-    # Порядок для отображения
+    # Порядок для отображения (по убыванию медианы)
     order = dopant_stats.loc[top_dopants].sort_values('median', ascending=False).index
     
-    # Violin plot
-    sns.violinplot(data=plot_df, x='D_element', y='x_boundary', 
-                   order=order, ax=ax, cut=0)
+    # Создаем данные для violin plot
+    violin_data = [plot_df[plot_df['D_element'] == d]['x_boundary'].values for d in order]
+    
+    # Рисуем violin plot
+    parts = ax.violinplot(violin_data, positions=range(len(order)), 
+                         showmeans=False, showmedians=True)
+    
+    # Настройка цветов violin
+    for pc in parts['bodies']:
+        pc.set_facecolor('#D3D3D3')
+        pc.set_alpha(0.7)
+        pc.set_edgecolor('black')
+    
+    # Добавляем все точки с разными стилями для оценок и точных значений
+    for i, d in enumerate(order):
+        d_data = plot_df[plot_df['D_element'] == d]
+        
+        # Точные значения (не оценки) - синие кружки
+        exact_data = d_data[~d_data['is_estimate']]
+        if len(exact_data) > 0:
+            # Добавляем небольшой случайный шум для x-позиции
+            x_jittered = np.random.normal(i + 1, 0.05, len(exact_data))
+            ax.scatter(x_jittered, exact_data['x_boundary'], 
+                      color='blue', s=60, alpha=0.6, zorder=3,
+                      label='Exact value' if i == 0 else "")
+        
+        # Оценки (минимальные значения) - красные треугольники
+        est_data = d_data[d_data['is_estimate']]
+        if len(est_data) > 0:
+            x_jittered = np.random.normal(i + 1, 0.05, len(est_data))
+            ax.scatter(x_jittered, est_data['x_boundary'], 
+                      color='red', marker='^', s=60, alpha=0.6, zorder=3,
+                      label='Lower bound estimate' if i == 0 else "")
     
     # Добавляем количество образцов
     for i, d in enumerate(order):
         count = dopant_stats.loc[d, 'count']
-        ax.text(i, ax.get_ylim()[1]*0.95, f'n={int(count)}', 
-                ha='center', fontsize=9)
+        median = dopant_stats.loc[d, 'median']
+        ax.text(i + 1, ax.get_ylim()[1] * 0.95, f'n={int(count)}\nmedian={median:.3f}', 
+                ha='center', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    ax.set_xlabel('Dopant Element')
-    ax.set_ylabel('x(boundary)')
-    ax.set_title('Top 10 Dopants by Solubility (Violin Plot)')
+    ax.set_xticks(range(1, len(order) + 1))
+    ax.set_xticklabels(order, fontsize=11)
+    ax.set_xlabel('Dopant Element', fontsize=12)
+    ax.set_ylabel('x(boundary) - Solubility Limit', fontsize=12)
+    ax.set_title('Top 10 Dopants by Solubility\n(Red triangles = lower bound estimates from single-phase regions)', 
+                fontsize=14, fontweight='bold')
+    ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3, axis='y')
+    ax.set_axisbelow(True)
     
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -1576,4 +1707,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

@@ -487,52 +487,62 @@ def get_dopant_statistics(df, include_lower_bounds=True):
 # ============================================================================
 def plot_solubility_vs_dr(df, ax):
     """График 1: x(boundary) vs Δr"""
-    # Множество для отслеживания уже добавленных в легенду комбинаций
-    legend_added = set()
+    # Словарь для хранения информации о комбинациях
+    combinations = {}
     
-    for b_element in df['B_element'].unique():
-        mask = df['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
+    # Собираем все данные по комбинациям
+    for idx, row in df.iterrows():
+        if pd.isna(row.get('dr')) or pd.isna(row.get('x_boundary_value')):
+            continue
+            
+        b_element = row['B_element']
+        d_element = row['D_element']
+        combo_key = f"{b_element}-{d_element}"
         
-        # Разделяем точные значения и нижние оценки
-        exact_mask = mask & (df['x_boundary_type'] == 'exact')
-        lower_mask = mask & (df['x_boundary_type'] == 'lower_bound')
+        if combo_key not in combinations:
+            combinations[combo_key] = {
+                'b_element': b_element,
+                'd_element': d_element,
+                'exact_values': [],
+                'lower_bounds': []
+            }
+        
+        if row['x_boundary_type'] == 'exact':
+            combinations[combo_key]['exact_values'].append((row['dr'], row['x_boundary_value']))
+        else:  # lower_bound
+            combinations[combo_key]['lower_bounds'].append((row['dr'], row['x_boundary_value']))
+    
+    # Рисуем для каждой комбинации
+    for combo_key, data in combinations.items():
+        b_element = data['b_element']
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        marker = D_MARKERS.get(data['d_element'], D_MARKERS['default'])
         
         # Точные значения (полные маркеры)
-        for idx, row in df[exact_mask].iterrows():
-            d_element = row['D_element']
-            marker = D_MARKERS.get(d_element, D_MARKERS['default'])
-            
-            # Создаем уникальный ключ для легенды
-            legend_key = f"{b_element}-{d_element}"
-            
+        if data['exact_values']:
+            dr_exact, x_exact = zip(*data['exact_values'])
             ax.scatter(
-                row['dr'], row['x_boundary_value'],
+                dr_exact, x_exact,
                 color=color, marker=marker, s=80,
-                alpha=0.9, edgecolors='black', linewidth=0.5,
-                label=legend_key if legend_key not in legend_added else ""
+                alpha=1.0, edgecolors='black', linewidth=0.5,
+                label=combo_key
             )
-            legend_added.add(legend_key)
         
-        # Нижние оценки (полупрозрачные маркеры с контуром)
-        for idx, row in df[lower_mask].iterrows():
-            d_element = row['D_element']
-            marker = D_MARKERS.get(d_element, D_MARKERS['default'])
-            
-            # Создаем уникальный ключ для легенды с пометкой о нижней оценке
-            legend_key = f"{b_element}-{d_element} (≥)"
-            
+        # Нижние оценки (контур маркера без заливки)
+        if data['lower_bounds']:
+            dr_lower, x_lower = zip(*data['lower_bounds'])
             ax.scatter(
-                row['dr'], row['x_boundary_value'],
-                color=color, marker=marker, s=80,
-                alpha=0.3, edgecolors='black', linewidth=0.5,
-                label=legend_key if legend_key not in legend_added else ""
+                dr_lower, x_lower,
+                facecolors='none',  # Без заливки
+                edgecolors=color,    # Цветной контур
+                marker=marker, s=80,
+                alpha=1.0, linewidth=1.5,
+                label=f"{combo_key} (≥)" if not data['exact_values'] else ""  # Добавляем (≥) только если нет точных значений
             )
-            legend_added.add(legend_key)
     
     ax.set_xlabel('Δr = |r(D) - r(B)| (Å)')
     ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Radius Difference\n(Transparent = lower bound estimates)')
+    ax.set_title('Solubility Limit vs Radius Difference\n(Hollow markers = lower bound estimates)')
     
     # Легенда в 3 столбца
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=3, fontsize=8)
@@ -2272,6 +2282,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

@@ -995,7 +995,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         ax.text(0.5, 0.5, 'No data after filtering', ha='center', va='center')
         return fig
     
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 7))  # Увеличил размер для лучшей читаемости
     
     # Порядок для отображения
     order = dopant_stats.head(10).sort_values('Median', ascending=False)['Dopant'].tolist()
@@ -1003,60 +1003,99 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
     # Подготовка данных для violin plot
     plot_data = []
     positions = []
+    violin_labels = []
+    
     for i, d in enumerate(order):
         d_data = plot_df[plot_df['D_element'] == d]['x_boundary_value'].dropna()
         if len(d_data) > 0:
             plot_data.append(d_data)
-            positions.append(i)
+            positions.append(i + 1)  # +1 чтобы начать с 1, а не с 0
+            violin_labels.append(d)
     
     # Создаем violin plot
-    parts = ax.violinplot(plot_data, positions=positions, showmeans=False, showmedians=True)
-    
-    # Настройка цветов
-    for pc in parts['bodies']:
-        pc.set_facecolor('lightblue')
-        pc.set_alpha(0.7)
-        pc.set_edgecolor('black')
-    
-    # Добавляем scatter plot для отдельных точек с разделением по типам
-    for i, d in enumerate(order):
-        d_data_exact = plot_df[(plot_df['D_element'] == d) & 
-                               (plot_df['x_boundary_type'] == 'exact')]['x_boundary_value']
-        d_data_lower = plot_df[(plot_df['D_element'] == d) & 
-                               (plot_df['x_boundary_type'] == 'lower_bound')]['x_boundary_value']
+    if plot_data:  # Проверяем, что есть данные
+        parts = ax.violinplot(plot_data, positions=positions, showmeans=False, showmedians=True, widths=0.7)
         
-        # Точные значения
-        if len(d_data_exact) > 0:
-            x_pos = np.random.normal(i + 1, 0.05, len(d_data_exact))
-            ax.scatter(x_pos, d_data_exact, color='red', s=30, alpha=0.6, zorder=3)
+        # Настройка цветов
+        for pc in parts['bodies']:
+            pc.set_facecolor('lightblue')
+            pc.set_alpha(0.7)
+            pc.set_edgecolor('black')
+            pc.set_linewidth(1)
         
-        # Нижние оценки
-        if len(d_data_lower) > 0:
-            x_pos = np.random.normal(i + 1, 0.05, len(d_data_lower))
-            ax.scatter(x_pos, d_data_lower, color='red', s=30, alpha=0.2, zorder=2, marker='s')
-    
-    # Добавляем количество образцов
-    for i, d in enumerate(order):
-        stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
-        exact_count = int(stats['Exact values'])
-        lower_count = int(stats['Lower bounds'])
+        # Настройка медиан
+        if 'cmedians' in parts:
+            parts['cmedians'].set_color('red')
+            parts['cmedians'].set_linewidth(2)
         
-        text = f'n={exact_count}'
-        if lower_count > 0:
-            text += f' (+{lower_count}≥)'
+        # Добавляем scatter plot для отдельных точек с разделением по типам
+        for i, d in enumerate(order):
+            d_data_exact = plot_df[(plot_df['D_element'] == d) & 
+                                   (plot_df['x_boundary_type'] == 'exact')]['x_boundary_value']
+            d_data_lower = plot_df[(plot_df['D_element'] == d) & 
+                                   (plot_df['x_boundary_type'] == 'lower_bound')]['x_boundary_value']
+            
+            # Точные значения - красные кружки
+            if len(d_data_exact) > 0:
+                x_pos = np.random.normal(positions[i], 0.05, len(d_data_exact))
+                ax.scatter(x_pos, d_data_exact, color='darkred', s=40, 
+                          alpha=0.8, zorder=3, edgecolors='black', linewidth=0.5,
+                          label='Exact values' if i == 0 and len(d_data_exact) > 0 else "")
+            
+            # Нижние оценки - оранжевые квадраты с прозрачностью
+            if len(d_data_lower) > 0:
+                x_pos = np.random.normal(positions[i], 0.08, len(d_data_lower))
+                ax.scatter(x_pos, d_data_lower, color='orange', s=40, 
+                          alpha=0.5, zorder=2, marker='s', edgecolors='black', linewidth=0.5,
+                          label='Lower bounds (≥)' if i == 0 and len(d_data_lower) > 0 else "")
         
-        ax.text(i + 1, ax.get_ylim()[1]*0.95, text, 
-                ha='center', fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        # Добавляем количество образцов и диапазон
+        for i, d in enumerate(order):
+            stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
+            exact_count = int(stats['Exact values'])
+            lower_count = int(stats['Lower bounds'])
+            
+            # Получаем все значения для этого допанта (включая lower bounds)
+            all_values = plot_df[plot_df['D_element'] == d]['x_boundary_value'].dropna()
+            if len(all_values) > 0:
+                min_val = all_values.min()
+                max_val = all_values.max()
+                range_text = f'[{min_val:.2f}-{max_val:.2f}]'
+            else:
+                range_text = 'N/A'
+            
+            text = f'n={exact_count}'
+            if lower_count > 0:
+                text += f' (+{lower_count}≥)'
+            text += f'\n{range_text}'
+            
+            ax.text(positions[i], ax.get_ylim()[1]*0.98, text, 
+                    ha='center', fontsize=9, va='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7, edgecolor='black'))
+        
+        ax.set_xlabel('Dopant Element', fontsize=12, fontweight='bold')
+        ax.set_ylabel('x(boundary)', fontsize=12, fontweight='bold')
+        
+        title = f'Top 10 Dopants by Solubility - Distribution and Range\n'
+        title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds)'
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        
+        ax.set_xticks(positions)
+        ax.set_xticklabels(violin_labels, fontsize=11)
+        ax.set_ylim(bottom=0)  # Начинаем с 0 для лучшей визуализации
+        
+        # Добавляем легенду, если есть оба типа точек
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, loc='upper left', fontsize=10, 
+                     framealpha=0.9, edgecolor='black')
+        
+        ax.grid(True, alpha=0.3, axis='y', linestyle='--')
+        
+        # Добавляем горизонтальную линию для среднего или другой референсной точки
+        ax.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5, linewidth=1)
     
-    ax.set_xlabel('Dopant Element')
-    ax.set_ylabel('x(boundary)')
-    ax.set_title(f'Top 10 Dopants by Solubility\n({"Including" if include_lower_bounds else "Excluding"} lower bounds)')
-    ax.set_xticks(np.arange(1, len(order) + 1))
-    ax.set_xticklabels(order)
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    plt.xticks(rotation=45)
+    plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     return fig
 
@@ -2138,4 +2177,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

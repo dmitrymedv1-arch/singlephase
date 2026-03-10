@@ -487,6 +487,9 @@ def get_dopant_statistics(df, include_lower_bounds=True):
 # ============================================================================
 def plot_solubility_vs_dr(df, ax):
     """График 1: x(boundary) vs Δr"""
+    # Множество для отслеживания уже добавленных в легенду комбинаций
+    legend_added = set()
+    
     for b_element in df['B_element'].unique():
         mask = df['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
@@ -496,28 +499,36 @@ def plot_solubility_vs_dr(df, ax):
         lower_mask = mask & (df['x_boundary_type'] == 'lower_bound')
         
         # Точные значения (полные маркеры)
-        for _, row in df[exact_mask].iterrows():
+        for idx, row in df[exact_mask].iterrows():
             d_element = row['D_element']
             marker = D_MARKERS.get(d_element, D_MARKERS['default'])
+            
+            # Создаем уникальный ключ для легенды
+            legend_key = f"{b_element}-{d_element}"
             
             ax.scatter(
                 row['dr'], row['x_boundary_value'],
                 color=color, marker=marker, s=80,
                 alpha=0.9, edgecolors='black', linewidth=0.5,
-                label=f"{b_element}-{d_element}" if _ == exact_mask.idxmax() else ""
+                label=legend_key if legend_key not in legend_added else ""
             )
+            legend_added.add(legend_key)
         
         # Нижние оценки (полупрозрачные маркеры с контуром)
-        for _, row in df[lower_mask].iterrows():
+        for idx, row in df[lower_mask].iterrows():
             d_element = row['D_element']
             marker = D_MARKERS.get(d_element, D_MARKERS['default'])
+            
+            # Создаем уникальный ключ для легенды с пометкой о нижней оценке
+            legend_key = f"{b_element}-{d_element} (≥)"
             
             ax.scatter(
                 row['dr'], row['x_boundary_value'],
                 color=color, marker=marker, s=80,
                 alpha=0.3, edgecolors='black', linewidth=0.5,
-                label=f"{b_element}-{d_element} (≥)" if _ == lower_mask.idxmax() else ""
+                label=legend_key if legend_key not in legend_added else ""
             )
+            legend_added.add(legend_key)
     
     ax.set_xlabel('Δr = |r(D) - r(B)| (Å)')
     ax.set_ylabel('x(boundary)')
@@ -2258,6 +2269,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

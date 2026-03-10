@@ -1155,40 +1155,52 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                           alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=1,
                           label='Lower bounds (≥)' if i == 0 else "")
         
-        # Добавляем информацию о количестве образцов и радиусе
+        # Получаем верхнюю границу графика для позиционирования текста
+        y_top = ax.get_ylim()[1]
+        
+        # Добавляем информацию о количестве образцов
         for i, d in enumerate(sorted_dopants):
             stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
             exact_count = int(stats['Exact values'])
             lower_count = int(stats['Lower bounds'])
             
+            # Текст для отображения (только количество образцов)
+            text = f'n={exact_count}'
+            if lower_count > 0:
+                text += f' (+{lower_count}≥)'
+            
+            # Размещаем текст для количества образцов на одном уровне для всех
+            ax.text(positions[i], y_top * 0.98, text, 
+                    ha='center', fontsize=9, va='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
+        
+        # Добавляем информацию о диапазоне с "лесенкой" (на разных уровнях)
+        for i, d in enumerate(sorted_dopants):
             # Получаем все исходные значения для этого допанта
             all_values = df[df['D_element'] == d]['x_boundary_value'].dropna()
             if len(all_values) > 0:
                 min_val = all_values.min()
                 max_val = all_values.max()
                 
+                stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
+                lower_count = int(stats['Lower bounds'])
+                
                 # Для допантов с точными значениями показываем фактические min/max
                 if lower_count == 0:
-                    range_text = f'Range: [{min_val:.2f}-{max_val:.2f}]'
+                    range_text = f'[{min_val:.2f}-{max_val:.2f}]'
                 else:
                     # Для допантов с lower bounds показываем с символом ≥
-                    range_text = f'Range: {min_val:.2f} to ≥{max_val:.2f}'
-            else:
-                range_text = ''
-            
-            # Текст для отображения
-            text = f'n={exact_count}'
-            if lower_count > 0:
-                text += f' (+{lower_count}≥)'
-            
-            # Размещаем текст вверху
-            ax.text(positions[i], ax.get_ylim()[1] * 0.98, text, 
-                    ha='center', fontsize=9, va='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
-            
-            # Диапазон размещаем чуть ниже
-            if range_text:
-                ax.text(positions[i], ax.get_ylim()[1] * 0.92, range_text,
+                    range_text = f'{min_val:.2f} to ≥{max_val:.2f}'
+                
+                # "Лесенка" для позиций текста диапазона
+                # Четные позиции (0,2,4...) - на одном уровне
+                # Нечетные позиции (1,3,5...) - чуть ниже
+                if i % 2 == 0:  # четные позиции
+                    y_pos = y_top * 0.92
+                else:  # нечетные позиции
+                    y_pos = y_top * 0.89
+                
+                ax.text(positions[i], y_pos, range_text,
                         ha='center', fontsize=8, va='top',
                         bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7, edgecolor='gray'))
         
@@ -2305,6 +2317,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

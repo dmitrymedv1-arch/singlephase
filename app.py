@@ -553,66 +553,37 @@ def plot_solubility_vs_dr(df, ax):
 
 def plot_tolerance_factor(df, ax):
     """График 2: x(boundary) vs tolerance factor"""
-    # Словарь для хранения информации о комбинациях
-    combinations = {}
-    
-    # Собираем все данные по комбинациям
-    for idx, row in df.iterrows():
-        if pd.isna(row.get('tolerance_factor')) or pd.isna(row.get('x_boundary_value')):
-            continue
-            
-        b_element = row['B_element']
-        d_element = row['D_element']
-        combo_key = f"{b_element}-{d_element}"
-        
-        if combo_key not in combinations:
-            combinations[combo_key] = {
-                'b_element': b_element,
-                'd_element': d_element,
-                'exact_values': [],
-                'lower_bounds': []
-            }
-        
-        if row['x_boundary_type'] == 'exact':
-            combinations[combo_key]['exact_values'].append((row['tolerance_factor'], row['x_boundary_value']))
-        else:  # lower_bound
-            combinations[combo_key]['lower_bounds'].append((row['tolerance_factor'], row['x_boundary_value']))
-    
-    # Рисуем для каждой комбинации
-    for combo_key, data in combinations.items():
-        b_element = data['b_element']
+    for b_element in df['B_element'].unique():
+        mask = df['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
-        # Точные значения (полные маркеры)
-        if data['exact_values']:
-            t_exact, x_exact = zip(*data['exact_values'])
-            ax.scatter(
-                t_exact, x_exact,
-                color=color, s=100,
-                alpha=0.9, edgecolors='black', linewidth=0.5,
-                label=combo_key
-            )
+        # Разделяем точные значения и нижние оценки
+        exact_mask = mask & (df['x_boundary_type'] == 'exact')
+        lower_mask = mask & (df['x_boundary_type'] == 'lower_bound')
         
-        # Нижние оценки (контур маркера без заливки)
-        if data['lower_bounds']:
-            t_lower, x_lower = zip(*data['lower_bounds'])
-            ax.scatter(
-                t_lower, x_lower,
-                facecolors='none',  # Без заливки
-                edgecolors=color,    # Цветной контур
-                s=100,
-                alpha=1.0, linewidth=1.5,
-                label=f"{combo_key} (≥)" if not data['exact_values'] else ""  # Добавляем (≥) только если нет точных значений
-            )
+        # Точные значения
+        ax.scatter(
+            df.loc[exact_mask, 'tolerance_factor'],
+            df.loc[exact_mask, 'x_boundary_value'],
+            color=color, s=100, alpha=0.9,
+            edgecolors='black', linewidth=0.5,
+            label=f"{b_element} (exact)"
+        )
+        
+        # Нижние оценки
+        ax.scatter(
+            df.loc[lower_mask, 'tolerance_factor'],
+            df.loc[lower_mask, 'x_boundary_value'],
+            color=color, s=100, alpha=0.3,
+            edgecolors='black', linewidth=0.5,
+            label=f"{b_element} (≥)"
+        )
     
     ax.axvline(x=1.0, color='red', linestyle='--', alpha=0.5, label='Ideal cubic (t=1)')
     ax.set_xlabel('Tolerance Factor (t) at x = x(boundary)')
     ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Tolerance Factor\n(Hollow markers = lower bound estimates)')
-    
-    # Легенда в 3 столбца
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=3, fontsize=8)
-    
+    ax.set_title('Solubility Limit vs Tolerance Factor\n(Transparent = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
@@ -2346,6 +2317,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

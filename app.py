@@ -996,7 +996,7 @@ def plot_b_site_statistics(df, include_lower_bounds=True):
     return fig, stats_df
 
 def plot_top_dopants_violin(df, include_lower_bounds=True):
-    """График 11: Violin plot для топ-10 допантов по растворимости"""
+    """График 11: Violin plot для топ-10 допантов по растворимости, отсортированных по ионному радиусу"""
     # Получаем статистику по допантам
     dopant_stats = get_dopant_statistics(df, include_lower_bounds)
     
@@ -1008,11 +1008,26 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
     # Берем топ-10 допантов по медиане
     top_dopants = dopant_stats.head(10)['Dopant'].tolist()
     
+    # Получаем ионные радиусы для допантов (используем стандартный заряд 3+, КЧ=6)
+    dopant_radii = {}
+    for dopant in top_dopants:
+        radius = IONIC_RADII.get((dopant, 3, 6), None)
+        if radius is None:
+            # Пробуем другие заряды если не нашли для 3+
+            for charge in [2, 4]:
+                radius = IONIC_RADII.get((dopant, charge, 6), None)
+                if radius:
+                    break
+        dopant_radii[dopant] = radius if radius else 0
+    
+    # Сортируем допанты по ионному радиусу (возрастание)
+    sorted_dopants = sorted(top_dopants, key=lambda d: dopant_radii.get(d, 0))
+    
     # СОЗДАЕМ РАСШИРЕННЫЙ ДАТАФРЕЙМ ТОЛЬКО ДЛЯ LOWER BOUNDS
     expanded_data = []
     
     for _, row in df.iterrows():
-        if row['D_element'] not in top_dopants:
+        if row['D_element'] not in sorted_dopants:
             continue
             
         if pd.isna(row.get('x_boundary_value')):
@@ -1055,7 +1070,6 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                 x_inv_end = row['x_boundary_value']
             
             # Создаем несколько точек в диапазоне для лучшего представления распределения
-            # Чем шире диапазон, тем больше точек добавляем
             range_width = x_inv_end - x_inv_in
             
             # Для очень узких диапазонов добавляем меньше точек
@@ -1084,31 +1098,33 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         ax.text(0.5, 0.5, 'No data after expansion', ha='center', va='center')
         return fig
     
-    fig, ax = plt.subplots(figsize=(12, 9))
-    
-    # Порядок для отображения
-    order = dopant_stats.head(10).sort_values('Median', ascending=False)['Dopant'].tolist()
+    fig, ax = plt.subplots(figsize=(14, 8))
     
     # Подготовка данных для violin plot
     plot_data = []
     positions = []
     violin_labels = []
+    radius_values = []
     
-    for i, d in enumerate(order):
+    for i, d in enumerate(sorted_dopants):
         # Берем данные из расширенного датафрейма
         d_data = expanded_df[expanded_df['D_element'] == d]['x_value'].dropna()
         if len(d_data) > 0:
             plot_data.append(d_data)
             positions.append(i + 1)
-            violin_labels.append(d)
+            violin_labels.append(f"{d}\n(r={dopant_radii.get(d, 0):.3f}Å)")
+            radius_values.append(dopant_radii.get(d, 0))
     
     # Создаем violin plot
     if plot_data:
         parts = ax.violinplot(plot_data, positions=positions, showmeans=False, showmedians=True, widths=0.7)
         
-        # Настройка цветов
-        for pc in parts['bodies']:
-            pc.set_facecolor('lightblue')
+        # Настройка цветов - градиент от малого к большому радиусу
+        cmap = plt.cm.viridis
+        norm = plt.Normalize(min(radius_values), max(radius_values))
+        
+        for i, pc in enumerate(parts['bodies']):
+            pc.set_facecolor(cmap(norm(radius_values[i])))
             pc.set_alpha(0.6)
             pc.set_edgecolor('navy')
             pc.set_linewidth(1)
@@ -1119,7 +1135,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             parts['cmedians'].set_linewidth(2)
         
         # Добавляем scatter plot для исходных точных значений
-        for i, d in enumerate(order):
+        for i, d in enumerate(sorted_dopants):
             # Исходные точные значения
             exact_data = df[(df['D_element'] == d) & 
                            (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
@@ -1138,8 +1154,8 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                           alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=1,
                           label='Lower bounds (≥)' if i == 0 else "")
         
-        # Добавляем информацию о количестве образцов и диапазоне
-        for i, d in enumerate(order):
+        # Добавляем информацию о количестве образцов и радиусе
+        for i, d in enumerate(sorted_dopants):
             stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
             exact_count = int(stats['Exact values'])
             lower_count = int(stats['Lower bounds'])
@@ -1166,32 +1182,38 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             
             # Размещаем текст вверху
             ax.text(positions[i], ax.get_ylim()[1] * 0.98, text, 
-                    ha='center', fontsize=10, va='top',
+                    ha='center', fontsize=9, va='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
             
             # Диапазон размещаем чуть ниже
             if range_text:
                 ax.text(positions[i], ax.get_ylim()[1] * 0.92, range_text,
-                        ha='center', fontsize=9, va='top',
+                        ha='center', fontsize=8, va='top',
                         bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7, edgecolor='gray'))
         
-        ax.set_xlabel('Dopant Element', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Dopant Element (with ionic radius)', fontsize=12, fontweight='bold')
         ax.set_ylabel('x(boundary) - Solubility Limit', fontsize=12, fontweight='bold')
         
-        title = f'Top 10 Dopants by Solubility - Distribution\n'
+        title = f'Top 10 Dopants by Solubility - Sorted by Ionic Radius\n'
         title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds)'
         ax.set_title(title, fontsize=14, fontweight='bold')
         
         ax.set_xticks(positions)
-        ax.set_xticklabels(violin_labels, fontsize=11)
+        ax.set_xticklabels(violin_labels, fontsize=10)
         ax.set_ylim(bottom=0, top=1.0)  # Фиксируем верхнюю границу для единообразия
         
-        # Добавляем легенду
+        # Добавляем colorbar для радиуса
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, orientation='vertical', pad=0.02)
+        cbar.set_label('Ionic Radius (Å)', fontsize=10)
+        
+        # Добавляем легенду для точек
         handles, labels = ax.get_legend_handles_labels()
         if handles:
             # Убираем дубликаты в легенде
             unique = dict(zip(labels, handles))
-            ax.legend(unique.values(), unique.keys(), loc='upper right', fontsize=10, 
+            ax.legend(unique.values(), unique.keys(), loc='upper right', fontsize=9, 
                      framealpha=0.9, edgecolor='black')
         
         ax.grid(True, alpha=0.3, axis='y', linestyle='--')
@@ -1200,7 +1222,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         for y in [0.2, 0.4, 0.6, 0.8]:
             ax.axhline(y=y, color='gray', linestyle=':', alpha=0.3, linewidth=0.5)
     
-    plt.xticks(rotation=45, ha='right')
+    plt.xticks(rotation=0)
     plt.tight_layout()
     return fig
 
@@ -2282,6 +2304,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

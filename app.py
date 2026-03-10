@@ -984,18 +984,55 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
     # Берем топ-10 допантов по медиане
     top_dopants = dopant_stats.head(10)['Dopant'].tolist()
     
-    if include_lower_bounds:
-        plot_df = df[df['D_element'].isin(top_dopants)].dropna(subset=['x_boundary_value'])
-    else:
-        plot_df = df[(df['D_element'].isin(top_dopants)) & 
-                     (df['x_boundary_type'] == 'exact')].dropna(subset=['x_boundary_value'])
+    # СОЗДАЕМ РАСШИРЕННЫЙ ДАТАФРЕЙМ, УЧИТЫВАЮЩИЙ ДИАПАЗОНЫ ДЛЯ LOWER BOUNDS
+    expanded_data = []
     
-    if len(plot_df) == 0:
+    for _, row in df.iterrows():
+        if row['D_element'] not in top_dopants:
+            continue
+            
+        if pd.isna(row.get('x_boundary_value')):
+            continue
+            
+        if row['x_boundary_type'] == 'exact':
+            # Для точных значений добавляем одну точку
+            expanded_data.append({
+                'D_element': row['D_element'],
+                'x_value': row['x_boundary_value'],
+                'type': 'exact'
+            })
+        elif row['x_boundary_type'] == 'lower_bound' and include_lower_bounds:
+            # Для нижних оценок добавляем несколько точек в диапазоне от x_inv_in до x_inv_end
+            x_inv_in = row.get('x_inv_in', 0)
+            x_inv_end = row.get('x_inv_end', row['x_boundary_value'])
+            
+            if pd.isna(x_inv_in):
+                x_inv_in = 0
+            if pd.isna(x_inv_end):
+                x_inv_end = row['x_boundary_value']
+            
+            # Создаем несколько точек в диапазоне для лучшего представления распределения
+            # Чем шире диапазон, тем больше точек добавляем
+            range_width = x_inv_end - x_inv_in
+            n_points = max(3, min(10, int(range_width * 20)))  # Адаптивное количество точек
+            
+            for x in np.linspace(x_inv_in, x_inv_end, n_points):
+                expanded_data.append({
+                    'D_element': row['D_element'],
+                    'x_value': x,
+                    'type': 'lower_bound',
+                    'original_max': x_inv_end  # Сохраняем максимальное значение для аннотаций
+                })
+    
+    # Создаем расширенный датафрейм
+    expanded_df = pd.DataFrame(expanded_data)
+    
+    if len(expanded_df) == 0:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'No data after filtering', ha='center', va='center')
+        ax.text(0.5, 0.5, 'No data after expansion', ha='center', va='center')
         return fig
     
-    fig, ax = plt.subplots(figsize=(14, 7))  # Увеличил размер для лучшей читаемости
+    fig, ax = plt.subplots(figsize=(14, 7))
     
     # Порядок для отображения
     order = dopant_stats.head(10).sort_values('Median', ascending=False)['Dopant'].tolist()
@@ -1006,21 +1043,21 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
     violin_labels = []
     
     for i, d in enumerate(order):
-        d_data = plot_df[plot_df['D_element'] == d]['x_boundary_value'].dropna()
+        d_data = expanded_df[expanded_df['D_element'] == d]['x_value'].dropna()
         if len(d_data) > 0:
             plot_data.append(d_data)
-            positions.append(i + 1)  # +1 чтобы начать с 1, а не с 0
+            positions.append(i + 1)
             violin_labels.append(d)
     
     # Создаем violin plot
-    if plot_data:  # Проверяем, что есть данные
+    if plot_data:
         parts = ax.violinplot(plot_data, positions=positions, showmeans=False, showmedians=True, widths=0.7)
         
         # Настройка цветов
         for pc in parts['bodies']:
             pc.set_facecolor('lightblue')
-            pc.set_alpha(0.7)
-            pc.set_edgecolor('black')
+            pc.set_alpha(0.6)
+            pc.set_edgecolor('navy')
             pc.set_linewidth(1)
         
         # Настройка медиан
@@ -1028,72 +1065,82 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             parts['cmedians'].set_color('red')
             parts['cmedians'].set_linewidth(2)
         
-        # Добавляем scatter plot для отдельных точек с разделением по типам
+        # Добавляем scatter plot для исходных точек
         for i, d in enumerate(order):
-            d_data_exact = plot_df[(plot_df['D_element'] == d) & 
-                                   (plot_df['x_boundary_type'] == 'exact')]['x_boundary_value']
-            d_data_lower = plot_df[(plot_df['D_element'] == d) & 
-                                   (plot_df['x_boundary_type'] == 'lower_bound')]['x_boundary_value']
+            # Исходные точные значения
+            exact_data = df[(df['D_element'] == d) & 
+                           (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
+            if len(exact_data) > 0:
+                x_pos = np.random.normal(positions[i], 0.05, len(exact_data))
+                ax.scatter(x_pos, exact_data, color='darkred', s=50, 
+                          alpha=0.9, zorder=3, edgecolors='black', linewidth=0.5,
+                          label='Exact values' if i == 0 else "")
             
-            # Точные значения - красные кружки
-            if len(d_data_exact) > 0:
-                x_pos = np.random.normal(positions[i], 0.05, len(d_data_exact))
-                ax.scatter(x_pos, d_data_exact, color='darkred', s=40, 
-                          alpha=0.8, zorder=3, edgecolors='black', linewidth=0.5,
-                          label='Exact values' if i == 0 and len(d_data_exact) > 0 else "")
-            
-            # Нижние оценки - оранжевые квадраты с прозрачностью
-            if len(d_data_lower) > 0:
-                x_pos = np.random.normal(positions[i], 0.08, len(d_data_lower))
-                ax.scatter(x_pos, d_data_lower, color='orange', s=40, 
-                          alpha=0.5, zorder=2, marker='s', edgecolors='black', linewidth=0.5,
-                          label='Lower bounds (≥)' if i == 0 and len(d_data_lower) > 0 else "")
+            # Исходные нижние оценки (показываем максимальное значение)
+            lower_data = df[(df['D_element'] == d) & 
+                           (df['x_boundary_type'] == 'lower_bound')]['x_boundary_value'].dropna()
+            if len(lower_data) > 0:
+                x_pos = np.random.normal(positions[i], 0.08, len(lower_data))
+                ax.scatter(x_pos, lower_data, color='darkorange', s=60, 
+                          alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=0.5,
+                          label='Lower bounds (≥)' if i == 0 else "")
         
-        # Добавляем количество образцов и диапазон
+        # Добавляем информацию о количестве образцов и диапазоне ВНИЗУ
         for i, d in enumerate(order):
             stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
             exact_count = int(stats['Exact values'])
             lower_count = int(stats['Lower bounds'])
             
-            # Получаем все значения для этого допанта (включая lower bounds)
-            all_values = plot_df[plot_df['D_element'] == d]['x_boundary_value'].dropna()
+            # Получаем все исходные значения для этого допанта
+            all_values = df[df['D_element'] == d]['x_boundary_value'].dropna()
             if len(all_values) > 0:
                 min_val = all_values.min()
                 max_val = all_values.max()
-                range_text = f'[{min_val:.2f}-{max_val:.2f}]'
+                range_text = f'Range: [{min_val:.2f}-{max_val:.2f}]'
             else:
-                range_text = 'N/A'
+                range_text = ''
             
+            # Текст для отображения ВНИЗУ
             text = f'n={exact_count}'
             if lower_count > 0:
                 text += f' (+{lower_count}≥)'
-            text += f'\n{range_text}'
             
-            ax.text(positions[i], ax.get_ylim()[1]*0.98, text, 
-                    ha='center', fontsize=9, va='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7, edgecolor='black'))
+            # Размещаем текст внизу графика
+            ax.text(positions[i], ax.get_ylim()[0] + 0.02, text, 
+                    ha='center', fontsize=9, va='bottom',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
+            
+            # Диапазон размещаем чуть выше
+            if range_text:
+                ax.text(positions[i], ax.get_ylim()[0] + 0.08, range_text,
+                        ha='center', fontsize=8, va='bottom',
+                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7, edgecolor='gray'))
         
         ax.set_xlabel('Dopant Element', fontsize=12, fontweight='bold')
-        ax.set_ylabel('x(boundary)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('x(boundary) - Solubility Limit', fontsize=12, fontweight='bold')
         
         title = f'Top 10 Dopants by Solubility - Distribution and Range\n'
         title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds)'
+        title += '\nViolin shows possible range for lower bound estimates'
         ax.set_title(title, fontsize=14, fontweight='bold')
         
         ax.set_xticks(positions)
         ax.set_xticklabels(violin_labels, fontsize=11)
         ax.set_ylim(bottom=0)  # Начинаем с 0 для лучшей визуализации
         
-        # Добавляем легенду, если есть оба типа точек
+        # Добавляем легенду внизу справа
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(handles, labels, loc='upper left', fontsize=10, 
+            # Убираем дубликаты в легенде
+            unique = dict(zip(labels, handles))
+            ax.legend(unique.values(), unique.keys(), loc='lower right', fontsize=10, 
                      framealpha=0.9, edgecolor='black')
         
         ax.grid(True, alpha=0.3, axis='y', linestyle='--')
         
-        # Добавляем горизонтальную линию для среднего или другой референсной точки
-        ax.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5, linewidth=1)
+        # Добавляем горизонтальные линии для ориентации
+        for y in [0.2, 0.4, 0.6, 0.8]:
+            ax.axhline(y=y, color='gray', linestyle=':', alpha=0.3, linewidth=0.5)
     
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
@@ -2177,5 +2224,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 

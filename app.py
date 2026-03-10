@@ -1186,8 +1186,8 @@ def plot_publication_matrix(df):
             b_elem = pub_matrix.index[i]
             d_elem = pub_matrix.columns[j]
             
-            exact_count = exact_matrix.loc[b_elem, d_elem] if d_elem in exact_matrix.columns else 0
-            lower_count = lower_matrix.loc[b_elem, d_elem] if d_elem in lower_matrix.columns else 0
+            exact_count = exact_matrix.loc[b_elem, d_elem] if (b_elem in exact_matrix.index and d_elem in exact_matrix.columns) else 0
+            lower_count = lower_matrix.loc[b_elem, d_elem] if (b_elem in lower_matrix.index and d_elem in lower_matrix.columns) else 0
             
             if exact_count > 0 or lower_count > 0:
                 text = f'{int(exact_count)}'
@@ -2138,3 +2138,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

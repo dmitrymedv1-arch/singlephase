@@ -984,7 +984,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
     # Берем топ-10 допантов по медиане
     top_dopants = dopant_stats.head(10)['Dopant'].tolist()
     
-    # СОЗДАЕМ РАСШИРЕННЫЙ ДАТАФРЕЙМ, УЧИТЫВАЮЩИЙ ДИАПАЗОНЫ ДЛЯ LOWER BOUNDS
+    # СОЗДАЕМ РАСШИРЕННЫЙ ДАТАФРЕЙМ ТОЛЬКО ДЛЯ LOWER BOUNDS
     expanded_data = []
     
     for _, row in df.iterrows():
@@ -995,33 +995,50 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             continue
             
         if row['x_boundary_type'] == 'exact':
-            # Для точных значений добавляем одну точку
+            # Для точных значений добавляем только само значение (один раз)
             expanded_data.append({
                 'D_element': row['D_element'],
                 'x_value': row['x_boundary_value'],
-                'type': 'exact'
+                'type': 'exact',
+                'weight': 1.0  # Вес для точных значений
             })
         elif row['x_boundary_type'] == 'lower_bound' and include_lower_bounds:
             # Для нижних оценок добавляем несколько точек в диапазоне от x_inv_in до x_inv_end
             x_inv_in = row.get('x_inv_in', 0)
             x_inv_end = row.get('x_inv_end', row['x_boundary_value'])
             
-            if pd.isna(x_inv_in):
+            if pd.isna(x_inv_in) or x_inv_in == '-':
                 x_inv_in = 0
-            if pd.isna(x_inv_end):
+            if pd.isna(x_inv_end) or x_inv_end == '-':
+                x_inv_end = row['x_boundary_value']
+            
+            try:
+                x_inv_in = float(x_inv_in)
+                x_inv_end = float(x_inv_end)
+            except (ValueError, TypeError):
+                x_inv_in = 0
                 x_inv_end = row['x_boundary_value']
             
             # Создаем несколько точек в диапазоне для лучшего представления распределения
             # Чем шире диапазон, тем больше точек добавляем
             range_width = x_inv_end - x_inv_in
-            n_points = max(3, min(10, int(range_width * 20)))  # Адаптивное количество точек
+            
+            # Для очень узких диапазонов добавляем меньше точек
+            if range_width < 0.05:
+                n_points = 2
+            elif range_width < 0.1:
+                n_points = 3
+            elif range_width < 0.2:
+                n_points = 5
+            else:
+                n_points = min(10, int(range_width * 15))  # Адаптивное количество точек
             
             for x in np.linspace(x_inv_in, x_inv_end, n_points):
                 expanded_data.append({
                     'D_element': row['D_element'],
                     'x_value': x,
                     'type': 'lower_bound',
-                    'original_max': x_inv_end  # Сохраняем максимальное значение для аннотаций
+                    'weight': 1.0 / n_points  # Вес, чтобы не завышать значимость
                 })
     
     # Создаем расширенный датафрейм
@@ -1043,6 +1060,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
     violin_labels = []
     
     for i, d in enumerate(order):
+        # Берем данные из расширенного датафрейма
         d_data = expanded_df[expanded_df['D_element'] == d]['x_value'].dropna()
         if len(d_data) > 0:
             plot_data.append(d_data)
@@ -1065,15 +1083,15 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             parts['cmedians'].set_color('red')
             parts['cmedians'].set_linewidth(2)
         
-        # Добавляем scatter plot для исходных точек
+        # Добавляем scatter plot для исходных точных значений
         for i, d in enumerate(order):
             # Исходные точные значения
             exact_data = df[(df['D_element'] == d) & 
                            (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
             if len(exact_data) > 0:
                 x_pos = np.random.normal(positions[i], 0.05, len(exact_data))
-                ax.scatter(x_pos, exact_data, color='darkred', s=50, 
-                          alpha=0.9, zorder=3, edgecolors='black', linewidth=0.5,
+                ax.scatter(x_pos, exact_data, color='darkred', s=80, 
+                          alpha=0.9, zorder=3, edgecolors='black', linewidth=1,
                           label='Exact values' if i == 0 else "")
             
             # Исходные нижние оценки (показываем максимальное значение)
@@ -1081,11 +1099,11 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                            (df['x_boundary_type'] == 'lower_bound')]['x_boundary_value'].dropna()
             if len(lower_data) > 0:
                 x_pos = np.random.normal(positions[i], 0.08, len(lower_data))
-                ax.scatter(x_pos, lower_data, color='darkorange', s=60, 
-                          alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=0.5,
+                ax.scatter(x_pos, lower_data, color='darkorange', s=80, 
+                          alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=1,
                           label='Lower bounds (≥)' if i == 0 else "")
         
-        # Добавляем информацию о количестве образцов и диапазоне ВНИЗУ
+        # Добавляем информацию о количестве образцов и диапазоне
         for i, d in enumerate(order):
             stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
             exact_count = int(stats['Exact values'])
@@ -1096,44 +1114,49 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             if len(all_values) > 0:
                 min_val = all_values.min()
                 max_val = all_values.max()
-                range_text = f'Range: [{min_val:.2f}-{max_val:.2f}]'
+                
+                # Для допантов с точными значениями показываем фактические min/max
+                if lower_count == 0:
+                    range_text = f'Range: [{min_val:.2f}-{max_val:.2f}]'
+                else:
+                    # Для допантов с lower bounds показываем с символом ≥
+                    range_text = f'Range: {min_val:.2f} to ≥{max_val:.2f}'
             else:
                 range_text = ''
             
-            # Текст для отображения ВНИЗУ
+            # Текст для отображения
             text = f'n={exact_count}'
             if lower_count > 0:
                 text += f' (+{lower_count}≥)'
             
-            # Размещаем текст внизу графика
-            ax.text(positions[i], ax.get_ylim()[1] * 0.98, text,  
-                    ha='center', fontsize=9, va='bottom',
+            # Размещаем текст вверху
+            ax.text(positions[i], ax.get_ylim()[1] * 0.98, text, 
+                    ha='center', fontsize=10, va='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
             
-            # Диапазон размещаем чуть выше
+            # Диапазон размещаем чуть ниже
             if range_text:
-                ax.text(positions[i], ax.get_ylim()[0] + 0.08, range_text,
-                        ha='center', fontsize=8, va='bottom',
+                ax.text(positions[i], ax.get_ylim()[1] * 0.92, range_text,
+                        ha='center', fontsize=9, va='top',
                         bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7, edgecolor='gray'))
         
         ax.set_xlabel('Dopant Element', fontsize=12, fontweight='bold')
         ax.set_ylabel('x(boundary) - Solubility Limit', fontsize=12, fontweight='bold')
         
-        title = f'Top 10 Dopants by Solubility - Distribution and Range\n'
+        title = f'Top 10 Dopants by Solubility - Distribution\n'
         title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds)'
-        title += '\nViolin shows possible range for lower bound estimates'
         ax.set_title(title, fontsize=14, fontweight='bold')
         
         ax.set_xticks(positions)
         ax.set_xticklabels(violin_labels, fontsize=11)
-        ax.set_ylim(bottom=0)  # Начинаем с 0 для лучшей визуализации
+        ax.set_ylim(bottom=0, top=1.0)  # Фиксируем верхнюю границу для единообразия
         
-        # Добавляем легенду внизу справа
+        # Добавляем легенду
         handles, labels = ax.get_legend_handles_labels()
         if handles:
             # Убираем дубликаты в легенде
             unique = dict(zip(labels, handles))
-            ax.legend(unique.values(), unique.keys(), loc='lower right', fontsize=10, 
+            ax.legend(unique.values(), unique.keys(), loc='upper right', fontsize=10, 
                      framealpha=0.9, edgecolor='black')
         
         ax.grid(True, alpha=0.3, axis='y', linestyle='--')
@@ -2224,6 +2247,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

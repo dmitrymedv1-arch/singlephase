@@ -995,11 +995,23 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             continue
             
         if row['x_boundary_type'] == 'exact':
-            # Для точных значений добавляем только само значение (один раз)
-            expanded_data.append({
-                'D_element': row['D_element'],
-                'x_value': row['x_boundary_value'],
-                'type': 'exact',
+            # Для точных значений добавляем точки от x_inv_in до x_boundary_value
+            x_inv_in = row.get('x_inv_in', 0)
+            if pd.isna(x_inv_in):
+                x_inv_in = 0
+            
+            x_boundary = row['x_boundary_value']
+            
+            # Создаем несколько точек в диапазоне от начала исследования до границы растворимости
+            range_width = x_boundary - x_inv_in
+            n_points = max(3, min(10, int(range_width * 20)))  # Адаптивное количество точек
+            
+            for x in np.linspace(x_inv_in, x_boundary, n_points):
+                expanded_data.append({
+                    'D_element': row['D_element'],
+                    'x_value': x,
+                    'type': 'exact',
+                    'original_max': x_boundary
                 'weight': 1.0  # Вес для точных значений
             })
         elif row['x_boundary_type'] == 'lower_bound' and include_lower_bounds:
@@ -2247,6 +2259,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

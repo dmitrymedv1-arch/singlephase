@@ -1204,7 +1204,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                         ha='center', fontsize=8, va='top',
                         bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7, edgecolor='gray'))
         
-        ax.set_xlabel('Dopant Element (with ionic radius)', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Dopant Element', fontsize=14, fontweight='bold')
         ax.set_ylabel('x(boundary) - Solubility Limit', fontsize=12, fontweight='bold')
         
         title = f'Top 10 Dopants by Solubility - Sorted by Ionic Radius\n'
@@ -2317,6 +2317,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

@@ -1106,7 +1106,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                 text += f' (+{lower_count}≥)'
             
             # Размещаем текст внизу графика
-            ax.text(positions[i], ax.get_ylim()[0] + 0.02, text, 
+            ax.text(positions[i], ax.get_ylim()[1] * 0.98, text,  
                     ha='center', fontsize=9, va='bottom',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
             
@@ -2224,6 +2224,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

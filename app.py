@@ -1113,7 +1113,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         if len(d_data) > 0:
             plot_data.append(d_data)
             positions.append(i + 1)
-            violin_labels.append(f"{d}\n(r={dopant_radii.get(d, 0):.3f}Å)")
+            violin_labels.append(f"{d}")
             radius_values.append(dopant_radii.get(d, 0))
     
     # Создаем violin plot
@@ -2317,6 +2317,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

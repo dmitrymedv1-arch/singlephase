@@ -1032,7 +1032,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         ax.text(0.5, 0.5, 'No data after expansion', ha='center', va='center')
         return fig
     
-    fig, ax = plt.subplots(figsize=(14, 7))
+    fig, ax = plt.subplots(figsize=(12, 9))
     
     # Порядок для отображения
     order = dopant_stats.head(10).sort_values('Median', ascending=False)['Dopant'].tolist()
@@ -2224,6 +2224,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

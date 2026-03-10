@@ -533,7 +533,10 @@ def plot_solubility_vs_dr(df, ax):
     ax.set_xlabel('Δr = |r(D) - r(B)| (Å)')
     ax.set_ylabel('x(boundary)')
     ax.set_title('Solubility Limit vs Radius Difference\n(Transparent = lower bound estimates)')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    # Легенда в 3 столбца
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=3, fontsize=8)
+    
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
@@ -2269,6 +2272,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

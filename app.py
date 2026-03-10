@@ -1012,8 +1012,8 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                     'x_value': x,
                     'type': 'exact',
                     'original_max': x_boundary
-                'weight': 1.0  # Вес для точных значений
-            })
+                    'weight': 1.0  # Вес для точных значений
+                })
         elif row['x_boundary_type'] == 'lower_bound' and include_lower_bounds:
             # Для нижних оценок добавляем несколько точек в диапазоне от x_inv_in до x_inv_end
             x_inv_in = row.get('x_inv_in', 0)
@@ -2259,6 +2259,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

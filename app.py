@@ -424,6 +424,56 @@ def process_x_boundary(value, inv_end=None):
     except (ValueError, TypeError):
         return None, 'none', str(value)
 
+def unify_solubility_data(df, treat_lower_as_range=False):
+    """
+    Объединяет точные значения и нижние оценки в единый диапазон растворимости.
+    
+    Если treat_lower_as_range = True:
+        - Для точных значений: x_solubility = x_boundary_value
+        - Для нижних оценок: x_solubility = x_inv_end (максимальный исследованный диапазон)
+        - Все записи получают тип 'unified'
+    
+    Если treat_lower_as_range = False:
+        - Возвращает исходные данные с разделением на exact и lower_bound
+    """
+    df_unified = df.copy()
+    
+    if not treat_lower_as_range:
+        # Возвращаем исходные данные
+        df_unified['x_solubility'] = df_unified['x_boundary_value']
+        df_unified['solubility_type'] = df_unified['x_boundary_type']
+        return df_unified
+    
+    # Объединяем: для всех записей используем максимальный исследованный диапазон
+    x_solubility_list = []
+    solubility_type_list = []
+    
+    for idx, row in df_unified.iterrows():
+        x_type = row.get('x_boundary_type', 'none')
+        x_boundary = row.get('x_boundary_value', None)
+        x_inv_end = row.get('x_inv_end', None)
+        
+        if x_type == 'exact' and x_boundary is not None and not pd.isna(x_boundary):
+            # Точные значения: используем x_boundary
+            x_solubility_list.append(x_boundary)
+            solubility_type_list.append('exact')
+        elif x_type == 'lower_bound' and x_inv_end is not None and not pd.isna(x_inv_end):
+            # Нижние оценки: используем x_inv_end как достигнутую растворимость
+            x_solubility_list.append(x_inv_end)
+            solubility_type_list.append('unified_lower')
+        elif x_boundary is not None and not pd.isna(x_boundary):
+            # Прочие случаи
+            x_solubility_list.append(x_boundary)
+            solubility_type_list.append(x_type)
+        else:
+            x_solubility_list.append(None)
+            solubility_type_list.append('none')
+    
+    df_unified['x_solubility'] = x_solubility_list
+    df_unified['solubility_type'] = solubility_type_list
+    
+    return df_unified
+
 # ============================================================================
 # ФУНКЦИЯ РАСЧЕТА ВСЕХ ДЕСКРИПТОРОВ (РАСШИРЕННАЯ)
 # ============================================================================
@@ -826,92 +876,170 @@ def get_dopant_statistics(df, include_lower_bounds=True):
 # ============================================================================
 # СУЩЕСТВУЮЩИЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (НЕ ИЗМЕНЯЮТСЯ)
 # ============================================================================
-def plot_solubility_vs_dr(df, ax):
-    """График 1: x(boundary) vs Δr"""
-    combinations = {}
+def plot_solubility_vs_dr(df, ax, treat_lower_as_range=False):
+    """График 1: x(boundary) vs Δr
     
-    for idx, row in df.iterrows():
-        if pd.isna(row.get('dr')) or pd.isna(row.get('x_boundary_value')):
-            continue
+    Parameters
+    ----------
+    df : DataFrame
+        Обработанные данные
+    ax : matplotlib.axes.Axes
+        Ось для рисования
+    treat_lower_as_range : bool
+        Объединять ли нижние оценки с точными значениями
+    """
+    # Создаем копию данных с объединенной растворимостью
+    df_plot = unify_solubility_data(df, treat_lower_as_range)
+    
+    if treat_lower_as_range:
+        # Используем объединенные данные - все точки одинакового стиля
+        for b_element in df_plot['B_element'].unique():
+            mask = df_plot['B_element'] == b_element
+            color = B_COLORS.get(b_element, B_COLORS['default'])
             
-        b_element = row['B_element']
-        d_element = row['D_element']
-        combo_key = f"{b_element}-{d_element}"
+            plot_data = df_plot[mask].dropna(subset=['dr', 'x_solubility'])
+            if len(plot_data) > 0:
+                ax.scatter(
+                    plot_data['dr'],
+                    plot_data['x_solubility'],
+                    color=color,
+                    marker='o',
+                    s=80,
+                    alpha=0.8,
+                    edgecolors='black',
+                    linewidth=0.5,
+                    label=b_element
+                )
+    else:
+        # Исходное поведение: разделение на точные и нижние оценки
+        combinations = {}
         
-        if combo_key not in combinations:
-            combinations[combo_key] = {
-                'b_element': b_element,
-                'd_element': d_element,
-                'exact_values': [],
-                'lower_bounds': []
-            }
+        for idx, row in df.iterrows():
+            if pd.isna(row.get('dr')) or pd.isna(row.get('x_boundary_value')):
+                continue
+                
+            b_element = row['B_element']
+            d_element = row['D_element']
+            combo_key = f"{b_element}-{d_element}"
+            
+            if combo_key not in combinations:
+                combinations[combo_key] = {
+                    'b_element': b_element,
+                    'd_element': d_element,
+                    'exact_values': [],
+                    'lower_bounds': []
+                }
+            
+            if row['x_boundary_type'] == 'exact':
+                combinations[combo_key]['exact_values'].append((row['dr'], row['x_boundary_value']))
+            else:
+                combinations[combo_key]['lower_bounds'].append((row['dr'], row['x_boundary_value']))
         
-        if row['x_boundary_type'] == 'exact':
-            combinations[combo_key]['exact_values'].append((row['dr'], row['x_boundary_value']))
-        else:
-            combinations[combo_key]['lower_bounds'].append((row['dr'], row['x_boundary_value']))
-    
-    for combo_key, data in combinations.items():
-        b_element = data['b_element']
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        marker = D_MARKERS.get(data['d_element'], D_MARKERS['default'])
-        
-        if data['exact_values']:
-            dr_exact, x_exact = zip(*data['exact_values'])
-            ax.scatter(
-                dr_exact, x_exact,
-                color=color, marker=marker, s=80,
-                alpha=1.0, edgecolors='black', linewidth=0.5,
-                label=combo_key
-            )
-        
-        if data['lower_bounds']:
-            dr_lower, x_lower = zip(*data['lower_bounds'])
-            ax.scatter(
-                dr_lower, x_lower,
-                facecolors='none',
-                edgecolors=color,
-                marker=marker, s=80,
-                alpha=1.0, linewidth=1.5,
-                label=f"{combo_key} (≥)" if not data['exact_values'] else ""
-            )
+        for combo_key, data in combinations.items():
+            b_element = data['b_element']
+            color = B_COLORS.get(b_element, B_COLORS['default'])
+            marker = D_MARKERS.get(data['d_element'], D_MARKERS['default'])
+            
+            if data['exact_values']:
+                dr_exact, x_exact = zip(*data['exact_values'])
+                ax.scatter(
+                    dr_exact, x_exact,
+                    color=color, marker=marker, s=80,
+                    alpha=1.0, edgecolors='black', linewidth=0.5,
+                    label=combo_key
+                )
+            
+            if data['lower_bounds']:
+                dr_lower, x_lower = zip(*data['lower_bounds'])
+                ax.scatter(
+                    dr_lower, x_lower,
+                    facecolors='none',
+                    edgecolors=color,
+                    marker=marker, s=80,
+                    alpha=1.0, linewidth=1.5,
+                    label=f"{combo_key} (≥)" if not data['exact_values'] else ""
+                )
     
     ax.set_xlabel('Δr = |r(D) - r(B)| (Å)')
-    ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Radius Difference\n(Hollow markers = lower bound estimates)')
+    ax.set_ylabel('x(solubility)')
+    
+    if treat_lower_as_range:
+        ax.set_title('Solubility Limit vs Radius Difference\n(All data treated as achieved solubility)')
+    else:
+        ax.set_title('Solubility Limit vs Radius Difference\n(Hollow markers = lower bound estimates)')
+    
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=3, fontsize=8)
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
-def plot_tolerance_factor(df, ax):
-    """График 2: x(boundary) vs tolerance factor"""
-    for b_element in df['B_element'].unique():
-        mask = df['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        exact_mask = mask & (df['x_boundary_type'] == 'exact')
-        lower_mask = mask & (df['x_boundary_type'] == 'lower_bound')
-        
-        ax.scatter(
-            df.loc[exact_mask, 'tolerance_factor'],
-            df.loc[exact_mask, 'x_boundary_value'],
-            color=color, s=100, alpha=0.9,
-            edgecolors='black', linewidth=0.5,
-            label=f"{b_element} (exact)"
-        )
-        
-        ax.scatter(
-            df.loc[lower_mask, 'tolerance_factor'],
-            df.loc[lower_mask, 'x_boundary_value'],
-            color=color, s=100, alpha=0.3,
-            edgecolors='black', linewidth=0.5,
-            label=f"{b_element} (≥)"
-        )
+def plot_tolerance_factor(df, ax, treat_lower_as_range=False):
+    """График 2: x(boundary) vs tolerance factor
+    
+    Parameters
+    ----------
+    df : DataFrame
+        Обработанные данные
+    ax : matplotlib.axes.Axes
+        Ось для рисования
+    treat_lower_as_range : bool
+        Объединять ли нижние оценки с точными значениями
+    """
+    # Создаем копию данных с объединенной растворимостью
+    df_plot = unify_solubility_data(df, treat_lower_as_range)
+    
+    if treat_lower_as_range:
+        # Используем объединенные данные - все точки одинакового стиля
+        for b_element in df_plot['B_element'].unique():
+            mask = df_plot['B_element'] == b_element
+            color = B_COLORS.get(b_element, B_COLORS['default'])
+            
+            plot_data = df_plot[mask].dropna(subset=['tolerance_factor', 'x_solubility'])
+            if len(plot_data) > 0:
+                ax.scatter(
+                    plot_data['tolerance_factor'],
+                    plot_data['x_solubility'],
+                    color=color,
+                    marker='o',
+                    s=100,
+                    alpha=0.8,
+                    edgecolors='black',
+                    linewidth=0.5,
+                    label=b_element
+                )
+    else:
+        # Исходное поведение: разделение на точные и нижние оценки
+        for b_element in df['B_element'].unique():
+            mask = df['B_element'] == b_element
+            color = B_COLORS.get(b_element, B_COLORS['default'])
+            
+            exact_mask = mask & (df['x_boundary_type'] == 'exact')
+            lower_mask = mask & (df['x_boundary_type'] == 'lower_bound')
+            
+            ax.scatter(
+                df.loc[exact_mask, 'tolerance_factor'],
+                df.loc[exact_mask, 'x_boundary_value'],
+                color=color, s=100, alpha=0.9,
+                edgecolors='black', linewidth=0.5,
+                label=f"{b_element} (exact)"
+            )
+            
+            ax.scatter(
+                df.loc[lower_mask, 'tolerance_factor'],
+                df.loc[lower_mask, 'x_boundary_value'],
+                color=color, s=100, alpha=0.3,
+                edgecolors='black', linewidth=0.5,
+                label=f"{b_element} (≥)"
+            )
     
     ax.axvline(x=1.0, color='red', linestyle='--', alpha=0.5, label='Ideal cubic (t=1)')
-    ax.set_xlabel('Tolerance Factor (t) at x = x(boundary)')
-    ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Tolerance Factor\n(Transparent = lower bound estimates)')
+    ax.set_xlabel('Tolerance Factor (t)')
+    ax.set_ylabel('x(solubility)')
+    
+    if treat_lower_as_range:
+        ax.set_title('Solubility Limit vs Tolerance Factor\n(All data treated as achieved solubility)')
+    else:
+        ax.set_title('Solubility Limit vs Tolerance Factor\n(Transparent = lower bound estimates)')
+    
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
@@ -1242,43 +1370,130 @@ def plot_temporal_trend(df, ax):
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
-def plot_b_site_statistics(df, include_lower_bounds=True):
-    """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)"""
-    if include_lower_bounds:
-        df_stats = df.dropna(subset=['x_boundary_value'])
+def plot_b_site_statistics(df, include_lower_bounds=True, treat_lower_as_range=False):
+    """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)
+    
+    Parameters
+    ----------
+    df : DataFrame
+        Обработанные данные
+    include_lower_bounds : bool
+        Включать ли нижние оценки в анализ
+    treat_lower_as_range : bool
+        Объединять ли нижние оценки с точными значениями
+    """
+    # Создаем копию данных с объединенной растворимостью
+    df_plot = unify_solubility_data(df, treat_lower_as_range)
+    
+    if treat_lower_as_range:
+        # Используем объединенные данные
+        if include_lower_bounds:
+            df_stats = df_plot.dropna(subset=['x_solubility'])
+        else:
+            df_stats = df_plot[df_plot['solubility_type'] == 'exact'].dropna(subset=['x_solubility'])
+        
+        # Переименовываем для совместимости
+        df_stats = df_stats.rename(columns={'x_solubility': 'x_boundary_value'})
     else:
-        df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
+        # Используем исходные данные с разделением
+        if include_lower_bounds:
+            df_stats = df.dropna(subset=['x_boundary_value'])
+        else:
+            df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
     
-    stats_df = df_stats.groupby('B_element')['x_boundary_value'].agg(['mean', 'median', 'count', 'std']).round(3)
+    if len(df_stats) == 0:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        ax1.text(0.5, 0.5, 'No data available', ha='center', va='center')
+        ax2.text(0.5, 0.5, 'No data available', ha='center', va='center')
+        return fig, pd.DataFrame()
     
-    type_counts = df.groupby('B_element')['x_boundary_type'].value_counts().unstack(fill_value=0)
-    if 'exact' in type_counts.columns:
-        stats_df['exact_count'] = type_counts['exact']
-    if 'lower_bound' in type_counts.columns:
-        stats_df['lower_bound_count'] = type_counts['lower_bound']
+    # Группировка по B-элементам с учетом типа значений
+    stats_list = []
+    for b_element in df_stats['B_element'].unique():
+        b_data = df_stats[df_stats['B_element'] == b_element]['x_boundary_value'].dropna()
+        
+        if len(b_data) == 0:
+            continue
+        
+        # Подсчет типов для этого B-элемента
+        if treat_lower_as_range:
+            exact_count = len(df_stats[(df_stats['B_element'] == b_element) & 
+                                        (df_stats['solubility_type'] == 'exact')])
+            lower_count = len(df_stats[(df_stats['B_element'] == b_element) & 
+                                        (df_stats['solubility_type'] == 'unified_lower')])
+        else:
+            exact_count = len(df[(df['B_element'] == b_element) & 
+                                  (df['x_boundary_type'] == 'exact')])
+            lower_count = len(df[(df['B_element'] == b_element) & 
+                                  (df['x_boundary_type'] == 'lower_bound')])
+        
+        stats_list.append({
+            'B_element': b_element,
+            'mean': b_data.mean(),
+            'median': b_data.median(),
+            'std': b_data.std(),
+            'count': len(b_data),
+            'min': b_data.min(),
+            'max': b_data.max(),
+            'exact_count': exact_count,
+            'lower_count': lower_count
+        })
+    
+    stats_df = pd.DataFrame(stats_list).sort_values('mean', ascending=False)
+    
+    if len(stats_df) == 0:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        ax1.text(0.5, 0.5, 'No data available', ha='center', va='center')
+        ax2.text(0.5, 0.5, 'No data available', ha='center', va='center')
+        return fig, stats_df
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     
-    b_sites = stats_df.index
+    b_sites = stats_df['B_element'].tolist()
     x_pos = np.arange(len(b_sites))
     
-    ax1.bar(x_pos, stats_df['mean'], yerr=stats_df['std'],
-            capsize=5, color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
-            edgecolor='black', linewidth=0.5, alpha=0.8)
+    # Столбчатая диаграмма с error bars
+    bars = ax1.bar(x_pos, stats_df['mean'], 
+                   yerr=stats_df['std'] if stats_df['std'].notna().all() else None,
+                   capsize=5, 
+                   color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
+                   edgecolor='black', linewidth=0.5, alpha=0.8)
+    
+    # Добавляем значения на столбцы
+    for i, (idx, row) in enumerate(stats_df.iterrows()):
+        ax1.text(i, row['mean'] + row['std'] + 0.01, 
+                f'{row["mean"]:.2f}', ha='center', fontsize=9, fontweight='bold')
+    
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(b_sites)
-    ax1.set_ylabel('Mean x(boundary)')
-    ax1.set_title(f'Average Solubility by B-site\n({len(df_stats)} samples)')
+    ax1.set_ylabel('Mean x(solubility)')
+    
+    if treat_lower_as_range:
+        title_suffix = "\n(lower bounds treated as full range)"
+    else:
+        title_suffix = "\n(hollow = lower bound estimates)"
+    
+    ax1.set_title(f'Average Solubility by B-site{title_suffix}\n({len(df_stats)} samples)')
     ax1.grid(True, alpha=0.3, axis='y')
     
+    # Количество образцов с разбивкой по типам
     bottom = np.zeros(len(b_sites))
-    if 'exact_count' in stats_df.columns:
-        ax2.bar(x_pos, stats_df['exact_count'], bottom=bottom,
-                label='Exact', color='darkblue', edgecolor='black', linewidth=0.5)
-        bottom += stats_df['exact_count']
-    if 'lower_bound_count' in stats_df.columns:
-        ax2.bar(x_pos, stats_df['lower_bound_count'], bottom=bottom,
-                label='Lower bound', color='lightblue', edgecolor='black', linewidth=0.5, alpha=0.7)
+    
+    exact_counts = stats_df['exact_count'].values
+    lower_counts = stats_df['lower_count'].values
+    
+    if exact_counts.sum() > 0:
+        ax2.bar(x_pos, exact_counts, bottom=bottom,
+                label='Exact values', color='darkblue', edgecolor='black', linewidth=0.5)
+        bottom += exact_counts
+    
+    if lower_counts.sum() > 0 and include_lower_bounds:
+        hatch = '' if treat_lower_as_range else '//'
+        alpha = 0.9 if treat_lower_as_range else 0.6
+        ax2.bar(x_pos, lower_counts, bottom=bottom,
+                label='Lower bounds (≥)' if not treat_lower_as_range else 'Range data',
+                color='lightblue', edgecolor='black', linewidth=0.5,
+                alpha=alpha, hatch=hatch)
     
     ax2.set_xticks(x_pos)
     ax2.set_xticklabels(b_sites)
@@ -1290,17 +1505,45 @@ def plot_b_site_statistics(df, include_lower_bounds=True):
     plt.tight_layout()
     return fig, stats_df
 
-def plot_top_dopants_violin(df, include_lower_bounds=True):
-    """График 11: Violin plot для топ-10 допантов по растворимости, отсортированных по ионному радиусу"""
-    dopant_stats = get_dopant_statistics(df, include_lower_bounds)
+def plot_top_dopants_violin(df, include_lower_bounds=True, treat_lower_as_range=False):
+    """График 11: Violin plot для топ-10 допантов по растворимости
     
-    if len(dopant_stats) == 0:
+    Parameters
+    ----------
+    df : DataFrame
+        Обработанные данные
+    include_lower_bounds : bool
+        Включать ли нижние оценки
+    treat_lower_as_range : bool
+        Объединять ли нижние оценки с точными значениями
+    """
+    # Создаем копию данных с объединенной растворимостью
+    df_plot = unify_solubility_data(df, treat_lower_as_range)
+    
+    # Получаем статистику по допантам с использованием объединенных данных
+    if treat_lower_as_range:
+        if include_lower_bounds:
+            df_stats = df_plot.dropna(subset=['x_solubility'])
+        else:
+            df_stats = df_plot[df_plot['solubility_type'] == 'exact'].dropna(subset=['x_solubility'])
+        df_stats = df_stats.rename(columns={'x_solubility': 'x_boundary_value'})
+    else:
+        if include_lower_bounds:
+            df_stats = df.dropna(subset=['x_boundary_value'])
+        else:
+            df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
+    
+    if len(df_stats) == 0:
         fig, ax = plt.subplots()
         ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
         return fig
     
-    top_dopants = dopant_stats.head(10)['Dopant'].tolist()
+    # Группировка по допантам для получения топ-10
+    dopant_groups = df_stats.groupby('D_element')['x_boundary_value'].agg(['median', 'count']).reset_index()
+    dopant_groups = dopant_groups.sort_values('median', ascending=False)
+    top_dopants = dopant_groups.head(10)['D_element'].tolist()
     
+    # Получаем ионные радиусы для допантов
     dopant_radii = {}
     for dopant in top_dopants:
         radius = IONIC_RADII.get((dopant, 3, 6), None)
@@ -1311,48 +1554,47 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                     break
         dopant_radii[dopant] = radius if radius else 0
     
+    # Сортируем допанты по ионному радиусу
     sorted_dopants = sorted(top_dopants, key=lambda d: dopant_radii.get(d, 0))
     
+    # Расширяем данные для violin plot
     expanded_data = []
     
-    for _, row in df.iterrows():
+    for _, row in df_plot.iterrows():
         if row['D_element'] not in sorted_dopants:
             continue
-            
-        if pd.isna(row.get('x_boundary_value')):
+        
+        if treat_lower_as_range:
+            x_val = row.get('x_solubility')
+            x_type = row.get('solubility_type', 'none')
+        else:
+            x_val = row.get('x_boundary_value')
+            x_type = row.get('x_boundary_type', 'none')
+        
+        if pd.isna(x_val):
             continue
-            
-        if row['x_boundary_type'] == 'exact':
+        
+        if x_type == 'exact' or (treat_lower_as_range and x_type == 'unified_lower'):
+            expanded_data.append({
+                'D_element': row['D_element'],
+                'x_value': x_val,
+                'type': 'exact'
+            })
+        elif x_type == 'lower_bound' and include_lower_bounds and not treat_lower_as_range:
             x_inv_in = row.get('x_inv_in', 0)
+            x_inv_end = row.get('x_inv_end', x_val)
+            
             if pd.isna(x_inv_in):
                 x_inv_in = 0
-            
-            x_boundary = row['x_boundary_value']
-            range_width = x_boundary - x_inv_in
-            n_points = max(3, min(10, int(range_width * 20)))
-            
-            for x in np.linspace(x_inv_in, x_boundary, n_points):
-                expanded_data.append({
-                    'D_element': row['D_element'],
-                    'x_value': x,
-                    'type': 'exact',
-                    'original_max': x_boundary
-                })
-        elif row['x_boundary_type'] == 'lower_bound' and include_lower_bounds:
-            x_inv_in = row.get('x_inv_in', 0)
-            x_inv_end = row.get('x_inv_end', row['x_boundary_value'])
-            
-            if pd.isna(x_inv_in) or x_inv_in == '-':
-                x_inv_in = 0
-            if pd.isna(x_inv_end) or x_inv_end == '-':
-                x_inv_end = row['x_boundary_value']
+            if pd.isna(x_inv_end):
+                x_inv_end = x_val
             
             try:
                 x_inv_in = float(x_inv_in)
                 x_inv_end = float(x_inv_end)
             except (ValueError, TypeError):
                 x_inv_in = 0
-                x_inv_end = row['x_boundary_value']
+                x_inv_end = x_val
             
             range_width = x_inv_end - x_inv_in
             
@@ -1369,8 +1611,7 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                 expanded_data.append({
                     'D_element': row['D_element'],
                     'x_value': x,
-                    'type': 'lower_bound',
-                    'weight': 1.0 / n_points
+                    'type': 'lower_bound'
                 })
     
     expanded_df = pd.DataFrame(expanded_data)
@@ -1411,29 +1652,32 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             parts['cmedians'].set_color('red')
             parts['cmedians'].set_linewidth(2)
         
+        # Добавляем исходные точки
         for i, d in enumerate(sorted_dopants):
-            exact_data = df[(df['D_element'] == d) &
-                           (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
+            if treat_lower_as_range:
+                exact_data = df_plot[(df_plot['D_element'] == d) & 
+                                     (df_plot['solubility_type'].isin(['exact', 'unified_lower']))]['x_solubility'].dropna()
+            else:
+                exact_data = df[(df['D_element'] == d) & 
+                                (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
+            
             if len(exact_data) > 0:
                 x_pos = np.random.normal(positions[i], 0.05, len(exact_data))
                 ax.scatter(x_pos, exact_data, color='darkred', s=80,
                           alpha=0.9, zorder=3, edgecolors='black', linewidth=1,
-                          label='Exact values' if i == 0 else "")
-            
-            lower_data = df[(df['D_element'] == d) &
-                           (df['x_boundary_type'] == 'lower_bound')]['x_boundary_value'].dropna()
-            if len(lower_data) > 0:
-                x_pos = np.random.normal(positions[i], 0.08, len(lower_data))
-                ax.scatter(x_pos, lower_data, color='darkorange', s=80,
-                          alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=1,
-                          label='Lower bounds (≥)' if i == 0 else "")
+                          label='Data points' if i == 0 else "")
         
         y_top = ax.get_ylim()[1]
         
+        # Добавляем информацию о количестве образцов
         for i, d in enumerate(sorted_dopants):
-            stats_row = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
-            exact_count = int(stats_row['Exact values'])
-            lower_count = int(stats_row['Lower bounds'])
+            if treat_lower_as_range:
+                exact_count = len(df_plot[(df_plot['D_element'] == d) & 
+                                          (df_plot['solubility_type'].isin(['exact', 'unified_lower']))])
+                lower_count = 0
+            else:
+                exact_count = len(df[(df['D_element'] == d) & (df['x_boundary_type'] == 'exact')])
+                lower_count = len(df[(df['D_element'] == d) & (df['x_boundary_type'] == 'lower_bound')]) if include_lower_bounds else 0
             
             text = f'n={exact_count}'
             if lower_count > 0:
@@ -1443,34 +1687,16 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                     ha='center', fontsize=9, va='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
         
-        for i, d in enumerate(sorted_dopants):
-            all_values = df[df['D_element'] == d]['x_boundary_value'].dropna()
-            if len(all_values) > 0:
-                min_val = all_values.min()
-                max_val = all_values.max()
-                
-                stats_row = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
-                lower_count = int(stats_row['Lower bounds'])
-                
-                if lower_count == 0:
-                    range_text = f'[{min_val:.2f}-{max_val:.2f}]'
-                else:
-                    range_text = f'{min_val:.2f} to ≥{max_val:.2f}'
-                
-                if i % 2 == 0:
-                    y_pos = y_top * 0.92
-                else:
-                    y_pos = y_top * 0.89
-                
-                ax.text(positions[i], y_pos, range_text,
-                        ha='center', fontsize=8, va='top',
-                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7, edgecolor='gray'))
-        
         ax.set_xlabel('Dopant Element', fontsize=14, fontweight='bold')
-        ax.set_ylabel('Solid solution range', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Solid solution range (x)', fontsize=14, fontweight='bold')
         
-        title = f'Top 10 Dopants by Solubility - Sorted by Ionic Radius\n'
-        title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds)'
+        if treat_lower_as_range:
+            title = f'Top 10 Dopants by Solubility - Sorted by Ionic Radius\n'
+            title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds, treated as full range)'
+        else:
+            title = f'Top 10 Dopants by Solubility - Sorted by Ionic Radius\n'
+            title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds)'
+        
         ax.set_title(title, fontsize=14, fontweight='bold')
         
         ax.set_xticks(positions)
@@ -1481,12 +1707,6 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, orientation='vertical', pad=0.02)
         cbar.set_label('Ionic Radius (Å)', fontsize=10)
-        
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            unique = dict(zip(labels, handles))
-            ax.legend(unique.values(), unique.keys(), loc='upper right', fontsize=9,
-                     framealpha=0.9, edgecolor='black')
         
         ax.grid(True, alpha=0.3, axis='y', linestyle='--')
         
@@ -2470,9 +2690,26 @@ def main():
         st.markdown("---")
         st.header("🔢 Data Processing")
         include_lower_bounds = st.checkbox(
-            "Include lower bound estimates (≥)",
+            "Include lower bound estimates (≥)", 
             value=True,
             help="When enabled, '-' in x(boundary) is treated as ≥ x(inv,end)"
+        )
+        
+        treat_lower_as_range = st.checkbox(
+            "Treat lower bounds as full range",
+            value=False,
+            help="When enabled, lower bound estimates (≥) are treated as actual solubility limits. "
+                 "All points will use same marker style (no hollow markers). "
+                 "Use this when you want to consider the entire investigated range as stable."
+        )
+        
+        # НОВАЯ ОПЦИЯ: объединение нижних оценок с точными значениями
+        treat_lower_as_range = st.checkbox(
+            "Treat lower bounds as full range",
+            value=False,
+            help="When enabled, lower bound estimates (≥) are treated as actual solubility limits. "
+                 "All points will use same marker style (no hollow markers). "
+                 "Use this when you want to consider the entire investigated range as stable."
         )
         
         st.markdown("---")
@@ -2625,7 +2862,11 @@ def main():
             st.subheader("Basic Statistical Analysis")
             
             if len(filtered_df) > 0:
-                fig, stats_df = plot_b_site_statistics(filtered_df, include_lower_bounds)
+                fig, stats_df = plot_b_site_statistics(
+                    filtered_df, 
+                    include_lower_bounds=include_lower_bounds,
+                    treat_lower_as_range=treat_lower_as_range
+                )
                 st.pyplot(fig)
                 plt.close(fig)
             
@@ -2648,7 +2889,6 @@ def main():
                 st.pyplot(fig)
                 plt.close(fig)
             
-            # Полная корреляционная матрица
             st.subheader("Comprehensive Correlation Matrix")
             fig = plot_comprehensive_correlation_matrix(filtered_df, include_lower_bounds)
             st.pyplot(fig)
@@ -2697,21 +2937,33 @@ def main():
                     ax = axes[plot_idx]
                     
                     if plot_name == "Solubility vs Radius Difference":
-                        if 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
-                            plot_solubility_vs_dr(filtered_df, ax)
+                        if 'dr' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
+                            plot_solubility_vs_dr(
+                                filtered_df, 
+                                ax, 
+                                treat_lower_as_range=treat_lower_as_range
+                            )
                         else:
                             ax.text(0.5, 0.5, 'Required data missing', ha='center', va='center')
                     
                     elif plot_name == "Solubility vs Tolerance Factor":
-                        if 'tolerance_factor' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
-                            plot_tolerance_factor(filtered_df, ax)
+                        if 'tolerance_factor' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
+                            plot_tolerance_factor(
+                                filtered_df, 
+                                ax, 
+                                treat_lower_as_range=treat_lower_as_range
+                            )
                         else:
                             ax.text(0.5, 0.5, 'Required data missing', ha='center', va='center')
                     
                     elif plot_name == "Top Dopants Violin Plot":
                         if 'x_boundary_value' in filtered_df.columns and 'D_element' in filtered_df.columns:
                             plt.close(fig)
-                            violin_fig = plot_top_dopants_violin(filtered_df, include_lower_bounds)
+                            violin_fig = plot_top_dopants_violin(
+                                filtered_df, 
+                                include_lower_bounds=include_lower_bounds,
+                                treat_lower_as_range=treat_lower_as_range
+                            )
                             st.pyplot(violin_fig)
                             plt.close(violin_fig)
                             plot_idx -= 1
@@ -2766,7 +3018,8 @@ def main():
                 with col1:
                     if 'x_boundary_value' in filtered_df.columns:
                         fig, ax = plt.subplots(figsize=(8, 6))
-                        plot_xmax_vs_xboundary(filtered_df, ax)
+                        # При необходимости передаем treat_lower_as_range
+                        plot_xmax_vs_xboundary(filtered_df, ax, treat_lower_as_range=treat_lower_as_range)
                         if not show_grid:
                             ax.grid(False)
                         if not show_legend:
@@ -2787,7 +3040,7 @@ def main():
                 
                 if 'x_rel_max' in filtered_df.columns and 'dr_rel' in filtered_df.columns:
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    plot_relative_position(filtered_df, ax)
+                    plot_relative_position(filtered_df, ax, treat_lower_as_range=treat_lower_as_range)
                     if not show_grid:
                         ax.grid(False)
                     if not show_legend:
@@ -2874,47 +3127,55 @@ def main():
         # ВКЛАДКА 5: VOLUMETRIC & THERMODYNAMIC
         # ============================================================================
         with tab5:
-            st.subheader("Volumetric and Thermodynamic Analysis")
+        st.subheader("Volumetric and Thermodynamic Analysis")
+        
+        vol_plots = st.multiselect(
+            "Select volumetric/thermodynamic plots",
+            options=[
+                "Free Volume vs Solubility",
+                "Formation Energy vs Solubility",
+                "3D Stability Phase Diagram",
+                "Pairplot: Volumetric Parameters",
+                "Density Prediction",
+                "Radar Chart: Material Profiles"
+            ],
+            default=["Free Volume vs Solubility", "Formation Energy vs Solubility"]
+        )
+        
+        for plot_name in vol_plots:
+            if plot_name == "Free Volume vs Solubility":
+                if 'free_volume_fraction' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    plot_free_volume_vs_xboundary(
+                        filtered_df, 
+                        ax, 
+                        treat_lower_as_range=treat_lower_as_range
+                    )
+                    if not show_grid:
+                        ax.grid(False)
+                    if not show_legend:
+                        ax.legend().remove()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.warning("Free volume data not available. Check if V_cell and V_cations were calculated.")
             
-            vol_plots = st.multiselect(
-                "Select volumetric/thermodynamic plots",
-                options=[
-                    "Free Volume vs Solubility",
-                    "Formation Energy vs Solubility",
-                    "3D Stability Phase Diagram",
-                    "Pairplot: Volumetric Parameters",
-                    "Density Prediction",
-                    "Radar Chart: Material Profiles"
-                ],
-                default=["Free Volume vs Solubility", "Formation Energy vs Solubility"]
-            )
-            
-            for plot_name in vol_plots:
-                if plot_name == "Free Volume vs Solubility":
-                    if 'free_volume_fraction' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
-                        fig, ax = plt.subplots(figsize=(10, 8))
-                        plot_free_volume_vs_xboundary(filtered_df, ax)
-                        if not show_grid:
-                            ax.grid(False)
-                        if not show_legend:
-                            ax.legend().remove()
-                        st.pyplot(fig)
-                        plt.close(fig)
-                    else:
-                        st.warning("Free volume data not available. Check if V_cell and V_cations were calculated.")
-                
-                elif plot_name == "Formation Energy vs Solubility":
-                    if 'E_form' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
-                        fig, ax = plt.subplots(figsize=(10, 8))
-                        plot_formation_energy_vs_xboundary(filtered_df, ax)
-                        if not show_grid:
-                            ax.grid(False)
-                        if not show_legend:
-                            ax.legend().remove()
-                        st.pyplot(fig)
-                        plt.close(fig)
-                    else:
-                        st.warning("Formation energy data not available.")
+            elif plot_name == "Formation Energy vs Solubility":
+                if 'E_form' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    plot_formation_energy_vs_xboundary(
+                        filtered_df, 
+                        ax, 
+                        treat_lower_as_range=treat_lower_as_range
+                    )
+                    if not show_grid:
+                        ax.grid(False)
+                    if not show_legend:
+                        ax.legend().remove()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.warning("Formation energy data not available.")
                 
                 elif plot_name == "3D Stability Phase Diagram":
                     if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
@@ -2961,7 +3222,11 @@ def main():
             st.subheader("Machine Learning Insights")
             
             st.markdown("**Feature Importance Analysis (Random Forest)**")
-            fig, importance_df = plot_feature_importance(filtered_df)
+            # При необходимости передаем treat_lower_as_range
+            fig, importance_df = plot_feature_importance(
+                filtered_df, 
+                treat_lower_as_range=treat_lower_as_range
+            )
             st.pyplot(fig)
             plt.close(fig)
             

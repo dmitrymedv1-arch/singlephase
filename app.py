@@ -3176,44 +3176,264 @@ def main():
                         plt.close(fig)
                     else:
                         st.warning("Formation energy data not available.")
-                    
-                    elif plot_name == "3D Stability Phase Diagram":
-                        if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
-                            fig = plot_3d_stability_phase(filtered_df)
-                            st.pyplot(fig)
-                            plt.close(fig)
-                        else:
-                            st.warning("Required data for 3D plot not available.")
-                    
-                    elif plot_name == "Pairplot: Volumetric Parameters":
-                        if 'free_volume_fraction' in filtered_df.columns and 'packing_factor' in filtered_df.columns:
-                            fig = plot_pairplot_volumetric(filtered_df, include_lower_bounds)
-                            st.pyplot(fig)
-                            plt.close(fig)
-                        else:
-                            st.warning("Volumetric parameters not available.")
-                    
-                    elif plot_name == "Density Prediction":
-                        fig = plot_density_prediction(filtered_df)
-                        st.pyplot(fig)
-                        plt.close(fig)
-                    
-                    elif plot_name == "Radar Chart: Material Profiles":
-                        fig = plot_radar_chart(filtered_df)
-                        st.pyplot(fig)
-                        plt.close(fig)
                 
-                st.subheader("Volumetric Statistics")
-                if 'free_volume_fraction' in filtered_df.columns:
-                    vol_stats = filtered_df['free_volume_fraction'].dropna()
-                    if len(vol_stats) > 0:
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Mean Free Volume Fraction", f"{vol_stats.mean():.3f}")
-                        with col2:
-                            st.metric("Median Free Volume Fraction", f"{vol_stats.median():.3f}")
-                        with col3:
-                            st.metric("Std Dev", f"{vol_stats.std():.3f}")
+                elif plot_name == "3D Stability Phase Diagram":
+                    if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                        fig = plot_3d_stability_phase(filtered_df)
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.warning("Required data for 3D plot not available.")
+                
+                elif plot_name == "Pairplot: Volumetric Parameters":
+                    if 'free_volume_fraction' in filtered_df.columns and 'packing_factor' in filtered_df.columns:
+                        fig = plot_pairplot_volumetric(filtered_df, include_lower_bounds)
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.warning("Volumetric parameters not available.")
+                
+                elif plot_name == "Density Prediction":
+                    fig = plot_density_prediction(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                
+                elif plot_name == "Radar Chart: Material Profiles":
+                    fig = plot_radar_chart(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+            
+            st.subheader("Volumetric Statistics")
+            if 'free_volume_fraction' in filtered_df.columns:
+                # Создаем данные с объединенной растворимостью для статистики
+                df_vol_stats = unify_solubility_data(filtered_df, treat_lower_as_range)
+                
+                if treat_lower_as_range:
+                    vol_stats = df_vol_stats.dropna(subset=['free_volume_fraction', 'x_solubility'])
+                    vol_stats = vol_stats[vol_stats['solubility_type'].isin(['exact', 'unified_lower'])]
+                else:
+                    if include_lower_bounds:
+                        vol_stats = filtered_df.dropna(subset=['free_volume_fraction', 'x_boundary_value'])
+                    else:
+                        vol_stats = filtered_df[filtered_df['x_boundary_type'] == 'exact'].dropna(subset=['free_volume_fraction', 'x_boundary_value'])
+                
+                if len(vol_stats) > 0:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Mean Free Volume Fraction", f"{vol_stats['free_volume_fraction'].mean():.3f}")
+                    with col2:
+                        st.metric("Median Free Volume Fraction", f"{vol_stats['free_volume_fraction'].median():.3f}")
+                    with col3:
+                        st.metric("Std Dev", f"{vol_stats['free_volume_fraction'].std():.3f}")
+                    
+                    # Дополнительная статистика по свободному объему в зависимости от B-элемента
+                    st.markdown("**Free Volume Fraction by B-site**")
+                    b_vol_stats = vol_stats.groupby('B_element')['free_volume_fraction'].agg(['mean', 'median', 'count', 'std']).round(4)
+                    st.dataframe(b_vol_stats, use_container_width=True)
+                else:
+                    st.info("No volumetric data available for statistics")
+            
+            st.subheader("Thermodynamic Statistics")
+            if 'E_form' in filtered_df.columns:
+                # Создаем данные с объединенной растворимостью для статистики
+                df_therm_stats = unify_solubility_data(filtered_df, treat_lower_as_range)
+                
+                if treat_lower_as_range:
+                    therm_stats = df_therm_stats.dropna(subset=['E_form', 'x_solubility'])
+                    therm_stats = therm_stats[therm_stats['solubility_type'].isin(['exact', 'unified_lower'])]
+                else:
+                    if include_lower_bounds:
+                        therm_stats = filtered_df.dropna(subset=['E_form', 'x_boundary_value'])
+                    else:
+                        therm_stats = filtered_df[filtered_df['x_boundary_type'] == 'exact'].dropna(subset=['E_form', 'x_boundary_value'])
+                
+                if len(therm_stats) > 0:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Mean Formation Energy", f"{therm_stats['E_form'].mean():.3f} eV/atom")
+                    with col2:
+                        st.metric("Median Formation Energy", f"{therm_stats['E_form'].median():.3f} eV/atom")
+                    with col3:
+                        st.metric("Std Dev", f"{therm_stats['E_form'].std():.3f} eV/atom")
+                    
+                    # Дополнительная статистика по энергии образования в зависимости от B-элемента
+                    st.markdown("**Formation Energy by B-site**")
+                    b_therm_stats = therm_stats.groupby('B_element')['E_form'].agg(['mean', 'median', 'count', 'std']).round(3)
+                    st.dataframe(b_therm_stats, use_container_width=True)
+                else:
+                    st.info("No thermodynamic data available for statistics")
+            
+            st.subheader("Oxygen Vacancy Concentration")
+            if 'oxygen_vacancy_conc' in filtered_df.columns:
+                # Создаем данные с объединенной растворимостью для статистики
+                df_vac_stats = unify_solubility_data(filtered_df, treat_lower_as_range)
+                
+                if treat_lower_as_range:
+                    vac_stats = df_vac_stats.dropna(subset=['oxygen_vacancy_conc', 'x_solubility'])
+                    vac_stats = vac_stats[vac_stats['solubility_type'].isin(['exact', 'unified_lower'])]
+                else:
+                    if include_lower_bounds:
+                        vac_stats = filtered_df.dropna(subset=['oxygen_vacancy_conc', 'x_boundary_value'])
+                    else:
+                        vac_stats = filtered_df[filtered_df['x_boundary_type'] == 'exact'].dropna(subset=['oxygen_vacancy_conc', 'x_boundary_value'])
+                
+                if len(vac_stats) > 0:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Mean [V_O]", f"{vac_stats['oxygen_vacancy_conc'].mean():.3f}")
+                    with col2:
+                        st.metric("Median [V_O]", f"{vac_stats['oxygen_vacancy_conc'].median():.3f}")
+                    with col3:
+                        st.metric("Max [V_O]", f"{vac_stats['oxygen_vacancy_conc'].max():.3f}")
+                    
+                    # График распределения концентрации кислородных вакансий
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    
+                    if treat_lower_as_range:
+                        for b_element in vac_stats['B_element'].unique():
+                            mask = vac_stats['B_element'] == b_element
+                            color = B_COLORS.get(b_element, B_COLORS['default'])
+                            ax.scatter(
+                                vac_stats.loc[mask, 'x_solubility'],
+                                vac_stats.loc[mask, 'oxygen_vacancy_conc'],
+                                color=color, s=80, alpha=0.7,
+                                edgecolors='black', linewidth=0.5,
+                                label=b_element
+                            )
+                    else:
+                        for b_element in vac_stats['B_element'].unique():
+                            mask = vac_stats['B_element'] == b_element
+                            color = B_COLORS.get(b_element, B_COLORS['default'])
+                            
+                            exact_mask = mask & (vac_stats['x_boundary_type'] == 'exact')
+                            lower_mask = mask & (vac_stats['x_boundary_type'] == 'lower_bound')
+                            
+                            if exact_mask.any():
+                                ax.scatter(
+                                    vac_stats.loc[exact_mask, 'x_boundary_value'],
+                                    vac_stats.loc[exact_mask, 'oxygen_vacancy_conc'],
+                                    color=color, s=80, alpha=0.9,
+                                    edgecolors='black', linewidth=0.5,
+                                    label=f"{b_element} (exact)"
+                                )
+                            
+                            if lower_mask.any() and include_lower_bounds:
+                                ax.scatter(
+                                    vac_stats.loc[lower_mask, 'x_boundary_value'],
+                                    vac_stats.loc[lower_mask, 'oxygen_vacancy_conc'],
+                                    facecolors='none', edgecolors=color,
+                                    s=80, alpha=0.7, linewidth=1.5,
+                                    label=f"{b_element} (≥)"
+                                )
+                    
+                    ax.plot([0, 1], [0, 0.5], 'k--', alpha=0.5, linewidth=1, label='[V_O] = x/2')
+                    ax.set_xlabel('x (solubility)')
+                    ax.set_ylabel('Oxygen Vacancy Concentration [V_O]')
+                    
+                    if treat_lower_as_range:
+                        ax.set_title('Oxygen Vacancy Concentration at Solubility Limit\n(All data treated as achieved solubility)')
+                    else:
+                        ax.set_title('Oxygen Vacancy Concentration at Solubility Limit\n(Hollow markers = lower bound estimates)')
+                    
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                    ax.grid(True, alpha=0.3, linestyle='--')
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.info("No oxygen vacancy data available for statistics")
+            
+            st.subheader("Correlation: Free Volume vs Formation Energy")
+            if 'free_volume_fraction' in filtered_df.columns and 'E_form' in filtered_df.columns:
+                # Создаем данные с объединенной растворимостью для корреляции
+                df_corr_stats = unify_solubility_data(filtered_df, treat_lower_as_range)
+                
+                if treat_lower_as_range:
+                    corr_stats = df_corr_stats.dropna(subset=['free_volume_fraction', 'E_form', 'x_solubility'])
+                    corr_stats = corr_stats[corr_stats['solubility_type'].isin(['exact', 'unified_lower'])]
+                else:
+                    if include_lower_bounds:
+                        corr_stats = filtered_df.dropna(subset=['free_volume_fraction', 'E_form', 'x_boundary_value'])
+                    else:
+                        corr_stats = filtered_df[filtered_df['x_boundary_type'] == 'exact'].dropna(subset=['free_volume_fraction', 'E_form', 'x_boundary_value'])
+                
+                if len(corr_stats) > 3:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    
+                    if treat_lower_as_range:
+                        scatter = ax.scatter(
+                            corr_stats['free_volume_fraction'],
+                            corr_stats['E_form'],
+                            c=corr_stats['x_solubility'],
+                            cmap='viridis',
+                            s=100,
+                            alpha=0.8,
+                            edgecolors='black',
+                            linewidth=0.5
+                        )
+                        cbar = plt.colorbar(scatter, ax=ax, label='x(solubility)')
+                    else:
+                        for b_element in corr_stats['B_element'].unique():
+                            mask = corr_stats['B_element'] == b_element
+                            color = B_COLORS.get(b_element, B_COLORS['default'])
+                            
+                            exact_mask = mask & (corr_stats['x_boundary_type'] == 'exact')
+                            lower_mask = mask & (corr_stats['x_boundary_type'] == 'lower_bound')
+                            
+                            if exact_mask.any():
+                                ax.scatter(
+                                    corr_stats.loc[exact_mask, 'free_volume_fraction'],
+                                    corr_stats.loc[exact_mask, 'E_form'],
+                                    color=color, s=100, alpha=0.9,
+                                    edgecolors='black', linewidth=0.5,
+                                    label=f"{b_element} (exact)"
+                                )
+                            
+                            if lower_mask.any() and include_lower_bounds:
+                                ax.scatter(
+                                    corr_stats.loc[lower_mask, 'free_volume_fraction'],
+                                    corr_stats.loc[lower_mask, 'E_form'],
+                                    facecolors='none', edgecolors=color,
+                                    s=100, alpha=0.7, linewidth=1.5,
+                                    label=f"{b_element} (≥)"
+                                )
+                    
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                    
+                    # Добавляем линию регрессии
+                    from scipy import stats as scipy_stats
+                    slope, intercept, r_value, p_value, std_err = scipy_stats.linregress(
+                        corr_stats['free_volume_fraction'], 
+                        corr_stats['E_form']
+                    )
+                    x_line = np.linspace(
+                        corr_stats['free_volume_fraction'].min(), 
+                        corr_stats['free_volume_fraction'].max(), 
+                        100
+                    )
+                    y_line = slope * x_line + intercept
+                    ax.plot(x_line, y_line, 'r--', alpha=0.5, 
+                           label=f'Linear fit: R² = {r_value**2:.3f}')
+                    
+                    ax.set_xlabel('Free Volume Fraction φ = V_free / V_cell')
+                    ax.set_ylabel('Formation Energy (eV/atom)')
+                    
+                    if treat_lower_as_range:
+                        ax.set_title('Free Volume vs Formation Energy\n(All data treated as achieved solubility)')
+                    else:
+                        ax.set_title('Free Volume vs Formation Energy\n(Hollow markers = lower bound estimates)')
+                    
+                    ax.legend()
+                    ax.grid(True, alpha=0.3, linestyle='--')
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    st.markdown(f"**Regression Statistics:**")
+                    st.markdown(f"- Pearson correlation: r = {r_value:.3f}")
+                    st.markdown(f"- p-value: {p_value:.3e}")
+                    st.markdown(f"- R² = {r_value**2:.3f}")
+                    st.markdown(f"- Slope: {slope:.3f} eV per unit φ")
+                else:
+                    st.info("Insufficient data for correlation analysis (need at least 4 points)")
         
         # ============================================================================
         # ВКЛАДКА 6: ML INSIGHTS

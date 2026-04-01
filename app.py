@@ -3127,93 +3127,93 @@ def main():
         # ВКЛАДКА 5: VOLUMETRIC & THERMODYNAMIC
         # ============================================================================
         with tab5:
-        st.subheader("Volumetric and Thermodynamic Analysis")
-        
-        vol_plots = st.multiselect(
-            "Select volumetric/thermodynamic plots",
-            options=[
-                "Free Volume vs Solubility",
-                "Formation Energy vs Solubility",
-                "3D Stability Phase Diagram",
-                "Pairplot: Volumetric Parameters",
-                "Density Prediction",
-                "Radar Chart: Material Profiles"
-            ],
-            default=["Free Volume vs Solubility", "Formation Energy vs Solubility"]
-        )
-        
-        for plot_name in vol_plots:
-            if plot_name == "Free Volume vs Solubility":
-                if 'free_volume_fraction' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
-                    fig, ax = plt.subplots(figsize=(10, 8))
-                    plot_free_volume_vs_xboundary(
-                        filtered_df, 
-                        ax, 
-                        treat_lower_as_range=treat_lower_as_range
-                    )
-                    if not show_grid:
-                        ax.grid(False)
-                    if not show_legend:
-                        ax.legend().remove()
-                    st.pyplot(fig)
-                    plt.close(fig)
-                else:
-                    st.warning("Free volume data not available. Check if V_cell and V_cations were calculated.")
+            st.subheader("Volumetric and Thermodynamic Analysis")
             
-            elif plot_name == "Formation Energy vs Solubility":
-                if 'E_form' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
-                    fig, ax = plt.subplots(figsize=(10, 8))
-                    plot_formation_energy_vs_xboundary(
-                        filtered_df, 
-                        ax, 
-                        treat_lower_as_range=treat_lower_as_range
-                    )
-                    if not show_grid:
-                        ax.grid(False)
-                    if not show_legend:
-                        ax.legend().remove()
-                    st.pyplot(fig)
-                    plt.close(fig)
-                else:
-                    st.warning("Formation energy data not available.")
-                
-                elif plot_name == "3D Stability Phase Diagram":
-                    if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
-                        fig = plot_3d_stability_phase(filtered_df)
+            vol_plots = st.multiselect(
+                "Select volumetric/thermodynamic plots",
+                options=[
+                    "Free Volume vs Solubility",
+                    "Formation Energy vs Solubility",
+                    "3D Stability Phase Diagram",
+                    "Pairplot: Volumetric Parameters",
+                    "Density Prediction",
+                    "Radar Chart: Material Profiles"
+                ],
+                default=["Free Volume vs Solubility", "Formation Energy vs Solubility"]
+            )
+            
+            for plot_name in vol_plots:
+                if plot_name == "Free Volume vs Solubility":
+                    if 'free_volume_fraction' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        plot_free_volume_vs_xboundary(
+                            filtered_df, 
+                            ax, 
+                            treat_lower_as_range=treat_lower_as_range
+                        )
+                        if not show_grid:
+                            ax.grid(False)
+                        if not show_legend:
+                            ax.legend().remove()
                         st.pyplot(fig)
                         plt.close(fig)
                     else:
-                        st.warning("Required data for 3D plot not available.")
+                        st.warning("Free volume data not available. Check if V_cell and V_cations were calculated.")
                 
-                elif plot_name == "Pairplot: Volumetric Parameters":
-                    if 'free_volume_fraction' in filtered_df.columns and 'packing_factor' in filtered_df.columns:
-                        fig = plot_pairplot_volumetric(filtered_df, include_lower_bounds)
+                elif plot_name == "Formation Energy vs Solubility":
+                    if 'E_form' in filtered_df.columns and ('x_boundary_value' in filtered_df.columns or 'x_solubility' in filtered_df.columns):
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        plot_formation_energy_vs_xboundary(
+                            filtered_df, 
+                            ax, 
+                            treat_lower_as_range=treat_lower_as_range
+                        )
+                        if not show_grid:
+                            ax.grid(False)
+                        if not show_legend:
+                            ax.legend().remove()
                         st.pyplot(fig)
                         plt.close(fig)
                     else:
-                        st.warning("Volumetric parameters not available.")
+                        st.warning("Formation energy data not available.")
+                    
+                    elif plot_name == "3D Stability Phase Diagram":
+                        if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            fig = plot_3d_stability_phase(filtered_df)
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        else:
+                            st.warning("Required data for 3D plot not available.")
+                    
+                    elif plot_name == "Pairplot: Volumetric Parameters":
+                        if 'free_volume_fraction' in filtered_df.columns and 'packing_factor' in filtered_df.columns:
+                            fig = plot_pairplot_volumetric(filtered_df, include_lower_bounds)
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        else:
+                            st.warning("Volumetric parameters not available.")
+                    
+                    elif plot_name == "Density Prediction":
+                        fig = plot_density_prediction(filtered_df)
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    
+                    elif plot_name == "Radar Chart: Material Profiles":
+                        fig = plot_radar_chart(filtered_df)
+                        st.pyplot(fig)
+                        plt.close(fig)
                 
-                elif plot_name == "Density Prediction":
-                    fig = plot_density_prediction(filtered_df)
-                    st.pyplot(fig)
-                    plt.close(fig)
-                
-                elif plot_name == "Radar Chart: Material Profiles":
-                    fig = plot_radar_chart(filtered_df)
-                    st.pyplot(fig)
-                    plt.close(fig)
-            
-            st.subheader("Volumetric Statistics")
-            if 'free_volume_fraction' in filtered_df.columns:
-                vol_stats = filtered_df['free_volume_fraction'].dropna()
-                if len(vol_stats) > 0:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Mean Free Volume Fraction", f"{vol_stats.mean():.3f}")
-                    with col2:
-                        st.metric("Median Free Volume Fraction", f"{vol_stats.median():.3f}")
-                    with col3:
-                        st.metric("Std Dev", f"{vol_stats.std():.3f}")
+                st.subheader("Volumetric Statistics")
+                if 'free_volume_fraction' in filtered_df.columns:
+                    vol_stats = filtered_df['free_volume_fraction'].dropna()
+                    if len(vol_stats) > 0:
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Mean Free Volume Fraction", f"{vol_stats.mean():.3f}")
+                        with col2:
+                            st.metric("Median Free Volume Fraction", f"{vol_stats.median():.3f}")
+                        with col3:
+                            st.metric("Std Dev", f"{vol_stats.std():.3f}")
         
         # ============================================================================
         # ВКЛАДКА 6: ML INSIGHTS

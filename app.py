@@ -9,9 +9,18 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder
 from scipy import stats
 from scipy.signal import find_peaks
+from scipy.ndimage import gaussian_filter1d
+from scipy.interpolate import griddata
 import re
 from datetime import datetime
 import openpyxl
+import warnings
+warnings.filterwarnings('ignore')
+
+# Константы
+AVOGADRO_NUMBER = 6.02214076e23  # моль⁻¹
+OXYGEN_RADIUS = 1.4  # Å
+PREFACTOR_VOLUME = 16 * np.pi / 3  # 16π/3 для расчета объема сфер
 
 # Научный стиль графиков
 plt.rcParams.update({
@@ -57,9 +66,10 @@ plt.rcParams.update({
 # ============================================================================
 IONIC_RADII = {
     # Формат: (ион, заряд, КЧ): (кристаллический радиус, ионный радиус)
-    # Для B-сайта используем КЧ=6, для Ba - КЧ=12, для O - фиксированное значение
-    ('Ba', 2, 12): 1.61,  # ионный радиус Ba2+ в XII координации
-    ('O', -2, 6): 1.4,    # по заданию
+    # Для A-сайта используем КЧ=12, для B-сайта КЧ=6, для O - фиксированное значение
+    ('Ba', 2, 12): 1.61,
+    ('Sr', 2, 12): 1.44,
+    ('O', -2, 6): 1.4,
     
     # B-катионы (КЧ=6)
     ('Ce', 4, 6): 0.87,
@@ -85,16 +95,139 @@ IONIC_RADII = {
     ('Er', 3, 6): 0.89,
     ('Tm', 3, 6): 0.88,
     ('Lu', 3, 6): 0.861,
+    ('Ca', 2, 6): 1.00,
+}
+
+# ============================================================================
+# БАЗА ДАННЫХ ЭЛЕКТРООТРИЦАТЕЛЬНОСТИ (Полинг)
+# ============================================================================
+ELECTRONEGATIVITY = {
+    'Ba': 0.89,
+    'Sr': 0.95,
+    'Ce': 1.12,
+    'Zr': 1.33,
+    'Sn': 1.96,
+    'Ti': 1.54,
+    'Hf': 1.3,
+    'Gd': 1.20,
+    'Sm': 1.17,
+    'Y': 1.22,
+    'In': 1.78,
+    'Sc': 1.36,
+    'Dy': 1.22,
+    'Ho': 1.23,
+    'Yb': 1.22,
+    'Eu': 1.20,
+    'Nd': 1.14,
+    'La': 1.10,
+    'Pr': 1.13,
+    'Tb': 1.20,
+    'Er': 1.24,
+    'Tm': 1.25,
+    'Lu': 1.27,
+    'Ca': 1.00,
+    'O': 3.44,
+}
+
+# ============================================================================
+# БАЗА ДАННЫХ СВОЙСТВ БАЗОВЫХ СТРУКТУР
+# ============================================================================
+MATERIAL_PROPERTIES = {
+    'BaCeO3': {
+        'band_gap': 2.299,
+        'E_form': -3.550,
+        'density': 6.034,
+        'M_molar': 341.36,
+        'r_A': 1.61,
+        'r_B': 0.87,
+        'r_O': 1.4
+    },
+    'BaSnO3': {
+        'band_gap': 0.372,
+        'E_form': -2.587,
+        'density': 7.097,
+        'M_molar': 336.03,
+        'r_A': 1.61,
+        'r_B': 0.69,
+        'r_O': 1.4
+    },
+    'BaHfO3': {
+        'band_gap': 3.539,
+        'E_form': -3.787,
+        'density': 8.332,
+        'M_molar': 428.72,
+        'r_A': 1.61,
+        'r_B': 0.71,
+        'r_O': 1.4
+    },
+    'BaZrO3': {
+        'band_gap': 3.116,
+        'E_form': -3.639,
+        'density': 6.148,
+        'M_molar': 348.54,
+        'r_A': 1.61,
+        'r_B': 0.72,
+        'r_O': 1.4
+    },
+    'BaTiO3': {
+        'band_gap': None,
+        'E_form': -1.685,
+        'density': 4.547,
+        'M_molar': 233.19,
+        'r_A': 1.61,
+        'r_B': 0.605,
+        'r_O': 1.4
+    },
+    'SrSnO3': {
+        'band_gap': 1.555,
+        'E_form': -2.631,
+        'density': 6.355,
+        'M_molar': 302.34,
+        'r_A': 1.44,
+        'r_B': 0.69,
+        'r_O': 1.4
+    }
+}
+
+# ============================================================================
+# АТОМНЫЕ МАССЫ (г/моль)
+# ============================================================================
+ATOMIC_MASSES = {
+    'Ba': 137.33,
+    'Sr': 87.62,
+    'Ce': 140.12,
+    'Zr': 91.22,
+    'Sn': 118.71,
+    'Ti': 47.87,
+    'Hf': 178.49,
+    'Gd': 157.25,
+    'Sm': 150.36,
+    'Y': 88.91,
+    'In': 114.82,
+    'Sc': 44.96,
+    'Dy': 162.50,
+    'Ho': 164.93,
+    'Yb': 173.05,
+    'Eu': 151.96,
+    'Nd': 144.24,
+    'La': 138.91,
+    'Pr': 140.91,
+    'Tb': 158.93,
+    'Er': 167.26,
+    'Tm': 168.93,
+    'Lu': 174.97,
+    'Ca': 40.08,
+    'O': 16.00,
 }
 
 # Цветовая карта для B-катионов
 B_COLORS = {
-    'Ce': '#E41A1C',  # красный
-    'Zr': '#377EB8',  # синий
-    'Sn': '#4DAF4A',  # зеленый
-    'Ti': '#984EA3',  # фиолетовый
-    'Hf': '#FF7F00',  # оранжевый
-    'default': '#999999'  # серый
+    'Ce': '#E41A1C',
+    'Zr': '#377EB8',
+    'Sn': '#4DAF4A',
+    'Ti': '#984EA3',
+    'Hf': '#FF7F00',
+    'default': '#999999'
 }
 
 # Маркеры для D-допантов
@@ -106,14 +239,13 @@ D_MARKERS = {
 }
 
 # ============================================================================
-# ФУНКЦИИ ДЛЯ ЗАГРУЗКИ И ОБРАБОТКИ ДАННЫХ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 def extract_year_from_doi(doi):
     """Извлечение года из DOI (если есть в строке)"""
     if pd.isna(doi) or doi == '':
         return None
     
-    # Пробуем найти год в DOI (часто есть в виде /2009/ или .2009.)
     match = re.search(r'[\./](19|20)\d{2}[\./]', str(doi))
     if match:
         return int(match.group(0).strip('./'))
@@ -124,79 +256,152 @@ def get_ionic_radius(element, charge, coordination):
     key = (element, charge, coordination)
     return IONIC_RADII.get(key, None)
 
-def calculate_descriptors(row):
-    """Расчет всех дескрипторов для одной строки"""
-    # Проверяем наличие необходимых ключей
-    if 'B_element' not in row.index or 'D_element' not in row.index:
-        return {
-            'r_B': None,
-            'r_D': None,
-            'dr': None,
-            'dr_rel': None,
-            'r_avg_B': None,
-            'tolerance_factor': None
-        }
+def get_electronegativity(element):
+    """Получение электроотрицательности по Полингу"""
+    return ELECTRONEGATIVITY.get(element, None)
+
+def get_atomic_mass(element):
+    """Получение атомной массы элемента"""
+    return ATOMIC_MASSES.get(element, None)
+
+def get_base_properties(a_element, b_element):
+    """Получение свойств базовой структуры ABO₃"""
+    compound = f"{a_element}{b_element}O3"
+    return MATERIAL_PROPERTIES.get(compound, None)
+
+def calculate_molar_mass(a_element, b_element, d_element, x):
+    """Расчет молярной массы для AB₁₋xDxO₃₋x/₂"""
+    M_A = get_atomic_mass(a_element)
+    M_B = get_atomic_mass(b_element)
+    M_D = get_atomic_mass(d_element)
+    M_O = ATOMIC_MASSES['O']
     
-    B = row['B_element']
-    D = row['D_element']
+    if None in [M_A, M_B, M_D]:
+        return None
     
-    # Получаем x_boundary, если есть
-    x = row.get('x_boundary_value', 0)  # Используем числовое значение
-    if pd.isna(x):
-        x = 0
+    return M_A + (1 - x) * M_B + x * M_D + (3 - x/2) * M_O
+
+def calculate_volume_cations(r_A, r_B, r_D, r_O, x):
+    """
+    Расчет объема катионов и анионов по сферической модели
+    Vcations = 16π/3 × [r(A)³ + (1-x)·r(B)³ + x·r(D)³ + (3-x/2)·r(O)³]
+    """
+    if None in [r_A, r_B, r_D, r_O]:
+        return None
     
-    # Получаем радиусы
-    r_Ba = IONIC_RADII.get(('Ba', 2, 12), None)
-    r_O = IONIC_RADII.get(('O', -2, 6), None)
+    term_A = r_A ** 3
+    term_B = (1 - x) * (r_B ** 3)
+    term_D = x * (r_D ** 3)
+    term_O = (3 - x/2) * (r_O ** 3)
     
-    # Для B и D определяем заряды по умолчанию
-    # B обычно 4+, D обычно 3+
-    r_B = IONIC_RADII.get((B, 4, 6), None)
-    r_D = IONIC_RADII.get((D, 3, 6), None)
+    return PREFACTOR_VOLUME * (term_A + term_B + term_D + term_O)
+
+def calculate_cell_volume(molar_mass, density):
+    """
+    Расчет объема элементарной ячейки
+    Vcell = M / (ρ × N_A)
+    """
+    if None in [molar_mass, density] or density <= 0:
+        return None
+    return molar_mass / (density * AVOGADRO_NUMBER) * 1e24  # перевод в Å³
+
+def calculate_free_volume(V_cell, V_cations):
+    """Расчет свободного объема"""
+    if None in [V_cell, V_cations]:
+        return None
+    return V_cell - V_cations
+
+def calculate_packing_factor(V_cations, V_cell):
+    """Расчет фактора упаковки"""
+    if None in [V_cations, V_cell] or V_cell <= 0:
+        return None
+    return V_cations / V_cell
+
+def calculate_free_volume_fraction(V_free, V_cell):
+    """Расчет доли свободного объема"""
+    if None in [V_free, V_cell] or V_cell <= 0:
+        return None
+    return V_free / V_cell
+
+def calculate_formation_energy(base_properties, d_element, x):
+    """
+    Расчет энергии образования твердого раствора
+    E_form = (1-x)·E_form(BO₃) + x·E_form(DO₁.₅) + ΔE_mixing
+    """
+    if base_properties is None:
+        return None
     
-    # Если не нашли по стандартным зарядам, пробуем другие
-    if r_B is None:
-        # Попробуем другие возможные заряды для B
-        possible_charges_B = [4, 3, 2]
-        for charge in possible_charges_B:
-            r_B = IONIC_RADII.get((B, charge, 6), None)
-            if r_B:
-                break
+    # Энергия образования DO₁.₅ (оценка по тренду)
+    # В реальности нужно из базы, здесь используем приближение
+    E_form_D = {
+        'Gd': -2.8, 'Sm': -2.7, 'Y': -2.9, 'In': -2.5, 'Sc': -3.0,
+        'Dy': -2.8, 'Ho': -2.8, 'Yb': -2.7, 'Eu': -2.6, 'Nd': -2.6,
+        'La': -2.5, 'Pr': -2.6, 'Tb': -2.7, 'Er': -2.8, 'Tm': -2.8, 'Lu': -2.9
+    }.get(d_element, -2.7)
     
-    if r_D is None:
-        # Попробуем другие возможные заряды для D
-        possible_charges_D = [3, 2, 4]
-        for charge in possible_charges_D:
-            r_D = IONIC_RADII.get((D, charge, 6), None)
-            if r_D:
-                break
+    E_form_base = base_properties.get('E_form', 0)
+    E_form_mixed = (1 - x) * E_form_base + x * E_form_D
     
-    if None in [r_Ba, r_O, r_B, r_D]:
-        return {
-            'r_B': r_B,
-            'r_D': r_D,
-            'dr': None,
-            'dr_rel': None,
-            'r_avg_B': None,
-            'tolerance_factor': None
-        }
+    return E_form_mixed
+
+def calculate_band_gap(base_properties, d_element, x):
+    """
+    Расчет ширины запрещенной зоны твердого раствора (линейная интерполяция)
+    """
+    if base_properties is None:
+        return None
     
-    # Расчеты
+    band_gap_base = base_properties.get('band_gap', None)
+    if band_gap_base is None:
+        return None
+    
+    # Оценка band gap для допантов (аппроксимация)
+    band_gap_D = {
+        'Gd': 5.2, 'Sm': 4.8, 'Y': 5.5, 'In': 3.7, 'Sc': 6.0,
+        'Dy': 5.0, 'Ho': 5.1, 'Yb': 4.5, 'Eu': 4.6, 'Nd': 4.7,
+        'La': 5.6, 'Pr': 4.9, 'Tb': 5.0, 'Er': 5.2, 'Tm': 5.3, 'Lu': 5.8
+    }.get(d_element, 5.0)
+    
+    return (1 - x) * band_gap_base + x * band_gap_D
+
+def calculate_lattice_strain_energy(r_B, r_D, x):
+    """
+    Оценка энергии деформации решетки
+    ε_strain ~ (Δr)² × (1 - x) × x
+    """
+    if None in [r_B, r_D]:
+        return None
+    
     dr = abs(r_D - r_B)
-    dr_rel = dr / r_B if r_B != 0 else None
-    r_avg_B = (1 - x) * r_B + x * r_D
+    return dr ** 2 * (1 - x) * x
+
+def calculate_tolerance_factor(r_A, r_avg_B, r_O):
+    """Расчет фактора толерантности Гольдшмидта"""
+    if None in [r_A, r_avg_B, r_O]:
+        return None
+    return (r_A + r_O) / (np.sqrt(2) * (r_avg_B + r_O))
+
+def calculate_t_gradient(r_B, r_D, x, r_A, r_O, x_points=100):
+    """
+    Расчет градиента изменения t с ростом x
+    dt/dx ≈ (t(x+Δx) - t(x)) / Δx
+    """
+    if None in [r_B, r_D, r_A, r_O]:
+        return None
     
-    # Tolerance factor: t = (r_Ba + r_O) / [√2 * (r_avg_B + r_O)]
-    tolerance_factor = (r_Ba + r_O) / (np.sqrt(2) * (r_avg_B + r_O))
+    x_vals = np.linspace(0, x, x_points)
+    t_vals = []
     
-    return {
-        'r_B': r_B,
-        'r_D': r_D,
-        'dr': dr,
-        'dr_rel': dr_rel,
-        'r_avg_B': r_avg_B,
-        'tolerance_factor': tolerance_factor
-    }
+    for xi in x_vals:
+        r_avg = (1 - xi) * r_B + xi * r_D
+        t = (r_A + r_O) / (np.sqrt(2) * (r_avg + r_O))
+        t_vals.append(t)
+    
+    if len(t_vals) > 1:
+        dt = t_vals[-1] - t_vals[0]
+        dx = x_vals[-1] - x_vals[0]
+        return dt / dx if dx > 0 else None
+    return None
 
 def process_x_boundary(value, inv_end=None):
     """
@@ -206,7 +411,6 @@ def process_x_boundary(value, inv_end=None):
     """
     if pd.isna(value) or value == '' or value == '-':
         if inv_end is not None and not pd.isna(inv_end) and inv_end != '':
-            # Если есть x(inv,end), используем его как нижнюю оценку
             try:
                 numeric_value = float(inv_end)
                 return numeric_value, 'lower_bound', str(value)
@@ -220,8 +424,138 @@ def process_x_boundary(value, inv_end=None):
     except (ValueError, TypeError):
         return None, 'none', str(value)
 
+# ============================================================================
+# ФУНКЦИЯ РАСЧЕТА ВСЕХ ДЕСКРИПТОРОВ (РАСШИРЕННАЯ)
+# ============================================================================
+def calculate_descriptors(row):
+    """Расчет всех дескрипторов для одной строки (расширенная версия)"""
+    # Проверка наличия необходимых ключей
+    if 'B_element' not in row.index or 'D_element' not in row.index:
+        return {
+            'r_B': None, 'r_D': None, 'dr': None, 'dr_rel': None,
+            'r_avg_B': None, 'tolerance_factor': None, 't_gradient': None,
+            't_range': None, 'χ_B': None, 'χ_D': None, 'χ_A': None,
+            'χ_avg_B': None, 'Δχ': None, 'Δχ_gradient': None,
+            'V_cations': None, 'V_cell': None, 'V_free': None,
+            'packing_factor': None, 'free_volume_fraction': None,
+            'E_form': None, 'band_gap': None, 'lattice_strain_energy': None,
+            'oxygen_vacancy_conc': None, 'molar_mass': None
+        }
+    
+    A = row.get('A_element', 'Ba')
+    B = row['B_element']
+    D = row['D_element']
+    
+    # Получаем x_boundary, если есть
+    x = row.get('x_boundary_value', 0)
+    if pd.isna(x):
+        x = 0
+    
+    # Получаем радиусы
+    r_A = IONIC_RADII.get((A, 2, 12), None)
+    r_O = IONIC_RADII.get(('O', -2, 6), None)
+    
+    # Для B и D определяем заряды по умолчанию
+    r_B = IONIC_RADII.get((B, 4, 6), None)
+    r_D = IONIC_RADII.get((D, 3, 6), None)
+    
+    # Если не нашли по стандартным зарядам, пробуем другие
+    if r_B is None:
+        possible_charges_B = [4, 3, 2]
+        for charge in possible_charges_B:
+            r_B = IONIC_RADII.get((B, charge, 6), None)
+            if r_B:
+                break
+    
+    if r_D is None:
+        possible_charges_D = [3, 2, 4]
+        for charge in possible_charges_D:
+            r_D = IONIC_RADII.get((D, charge, 6), None)
+            if r_D:
+                break
+    
+    # Получаем электроотрицательности
+    χ_A = get_electronegativity(A)
+    χ_B = get_electronegativity(B)
+    χ_D = get_electronegativity(D)
+    
+    # Получаем свойства базовой структуры
+    base_props = get_base_properties(A, B)
+    
+    # Расчеты
+    dr = abs(r_D - r_B) if None not in [r_B, r_D] else None
+    dr_rel = dr / r_B if (dr is not None and r_B is not None and r_B != 0) else None
+    
+    r_avg_B = (1 - x) * r_B + x * r_D if None not in [r_B, r_D] else None
+    
+    tolerance_factor = calculate_tolerance_factor(r_A, r_avg_B, r_O) if None not in [r_A, r_avg_B, r_O] else None
+    
+    t_gradient = calculate_t_gradient(r_B, r_D, x, r_A, r_O) if None not in [r_B, r_D, r_A, r_O] and x > 0 else None
+    
+    t_range = (calculate_tolerance_factor(r_A, r_B, r_O) - tolerance_factor) if None not in [r_A, r_B, r_O, tolerance_factor] else None
+    
+    χ_avg_B = (1 - x) * χ_B + x * χ_D if None not in [χ_B, χ_D] else None
+    
+    Δχ = abs(χ_avg_B - χ_A) if None not in [χ_avg_B, χ_A] else None
+    
+    Δχ_gradient = (χ_avg_B - χ_B) / x if (χ_avg_B is not None and χ_B is not None and x > 0) else None
+    
+    # Объемные характеристики
+    V_cations = calculate_volume_cations(r_A, r_B, r_D, r_O, x) if None not in [r_A, r_B, r_D, r_O] else None
+    
+    molar_mass = calculate_molar_mass(A, B, D, x)
+    
+    # Используем плотность из базовой структуры, если доступна
+    density = base_props.get('density', None) if base_props is not None else None
+    V_cell = calculate_cell_volume(molar_mass, density) if None not in [molar_mass, density] else None
+    
+    V_free = calculate_free_volume(V_cell, V_cations) if None not in [V_cell, V_cations] else None
+    
+    packing_factor = calculate_packing_factor(V_cations, V_cell) if None not in [V_cations, V_cell] else None
+    
+    free_volume_fraction = calculate_free_volume_fraction(V_free, V_cell) if None not in [V_free, V_cell] else None
+    
+    # Термодинамические характеристики
+    E_form = calculate_formation_energy(base_props, D, x) if base_props is not None else None
+    
+    band_gap = calculate_band_gap(base_props, D, x) if base_props is not None else None
+    
+    lattice_strain_energy = calculate_lattice_strain_energy(r_B, r_D, x) if None not in [r_B, r_D] else None
+    
+    oxygen_vacancy_conc = x / 2 if x is not None else None
+    
+    return {
+        'r_B': r_B,
+        'r_D': r_D,
+        'dr': dr,
+        'dr_rel': dr_rel,
+        'r_avg_B': r_avg_B,
+        'tolerance_factor': tolerance_factor,
+        't_gradient': t_gradient,
+        't_range': t_range,
+        'χ_B': χ_B,
+        'χ_D': χ_D,
+        'χ_A': χ_A,
+        'χ_avg_B': χ_avg_B,
+        'Δχ': Δχ,
+        'Δχ_gradient': Δχ_gradient,
+        'V_cations': V_cations,
+        'V_cell': V_cell,
+        'V_free': V_free,
+        'packing_factor': packing_factor,
+        'free_volume_fraction': free_volume_fraction,
+        'E_form': E_form,
+        'band_gap': band_gap,
+        'lattice_strain_energy': lattice_strain_energy,
+        'oxygen_vacancy_conc': oxygen_vacancy_conc,
+        'molar_mass': molar_mass
+    }
+
+# ============================================================================
+# ФУНКЦИЯ ПРОЦЕССИНГА ДАННЫХ (РАСШИРЕННАЯ)
+# ============================================================================
 def process_data(df):
-    """Основная функция обработки данных"""
+    """Основная функция обработки данных (расширенная версия)"""
     df_processed = df.copy()
     
     # Выводим названия колонок для отладки
@@ -231,17 +565,17 @@ def process_data(df):
     column_mapping = {}
     
     # Обычно в таких таблицах порядок колонок фиксирован:
-    # A, B, D, x(inv,in), x(inv,end), x(boundary), Impurity phase(s), x(max), doi
-    
+    # A, B, D, x(inv,in), x(inv,end), x(boundary), Impurity phase(s), x(max), doi,
+    # далее могут быть колонки с электроотрицательностями
     expected_order = [
-        'A_element', 'B_element', 'D_element', 
-        'x_inv_in', 'x_inv_end', 'x_boundary', 
+        'A_element', 'B_element', 'D_element',
+        'x_inv_in', 'x_inv_end', 'x_boundary',
         'impurity', 'x_max', 'doi'
     ]
     
     # Если колонок ровно 9, используем позиционное соответствие
-    if len(df_processed.columns) == 9:
-        for i, col_name in enumerate(expected_order):
+    if len(df_processed.columns) >= 9:
+        for i, col_name in enumerate(expected_order[:len(df_processed.columns)]):
             column_mapping[df_processed.columns[i]] = col_name
     else:
         # Пробуем найти соответствия по частичному совпадению
@@ -266,6 +600,12 @@ def process_data(df):
                 column_mapping[col] = 'x_max'
             elif 'doi' in col_lower:
                 column_mapping[col] = 'doi'
+            elif 'χa' in col_lower or 'χ a' in col_lower:
+                column_mapping[col] = 'χA_raw'
+            elif 'χb' in col_lower or 'χ b' in col_lower:
+                column_mapping[col] = 'χB_raw'
+            elif 'χd' in col_lower or 'χ d' in col_lower:
+                column_mapping[col] = 'χD_raw'
     
     # Применяем маппинг
     df_processed.rename(columns=column_mapping, inplace=True)
@@ -292,6 +632,12 @@ def process_data(df):
         if col in df_processed.columns:
             df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
     
+    # Обработка электроотрицательностей из файла
+    for col in ['χA_raw', 'χB_raw', 'χD_raw']:
+        if col in df_processed.columns:
+            df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
+            df_processed[col.replace('_raw', '')] = df_processed[col]
+    
     # СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ x_boundary
     if 'x_boundary' in df_processed.columns:
         # Создаем колонки для хранения обработанных значений
@@ -315,7 +661,7 @@ def process_data(df):
         
         # Для обратной совместимости оставляем исходную колонку, но создаем новую для числовых данных
         df_processed['x_boundary_original'] = df_processed['x_boundary']
-        df_processed['x_boundary'] = df_processed['x_boundary_value']  # заменяем для использования в старом коде
+        df_processed['x_boundary'] = df_processed['x_boundary_value']
     else:
         df_processed['x_boundary_value'] = None
         df_processed['x_boundary_type'] = 'none'
@@ -336,7 +682,7 @@ def process_data(df):
     else:
         df_processed['year'] = None
     
-    # Рассчитываем дескрипторы для каждой строки
+    # Рассчитываем дескрипторы для каждой строки (расширенная версия)
     descriptors_list = []
     for idx, row in df_processed.iterrows():
         desc = calculate_descriptors(row)
@@ -350,7 +696,6 @@ def process_data(df):
     # Дополнительные параметры
     if 'x_boundary_value' in result.columns and 'x_inv_end' in result.columns:
         with np.errstate(divide='ignore', invalid='ignore'):
-            # Используем x_boundary_value для расчетов
             result['x_rel_boundary'] = result['x_boundary_value'] / result['x_inv_end']
     
     if 'x_max' in result.columns and 'x_boundary_value' in result.columns:
@@ -358,21 +703,26 @@ def process_data(df):
             result['x_rel_max'] = result['x_max'] / result['x_boundary_value']
             result['x_diff_norm'] = (result['x_max'] - result['x_boundary_value']) / result['x_boundary_value']
     
+    # Расчет ширины окна растворимости
+    if 'x_boundary_value' in result.columns and 'x_inv_in' in result.columns:
+        result['solubility_window'] = result['x_boundary_value'] - result['x_inv_in']
+    
+    # Расчет стабильности
+    if 'x_boundary_value' in result.columns and 'x_max' in result.columns:
+        result['stability_margin'] = (result['x_boundary_value'] - result['x_max']) / result['x_boundary_value']
+    
     return result
 
 # ============================================================================
-# НОВЫЕ ФУНКЦИИ ДЛЯ РАСЧЕТА СТАТИСТИКИ
+# ФУНКЦИИ ДЛЯ РАСЧЕТА СТАТИСТИКИ (СУЩЕСТВУЮЩИЕ, НЕ ИЗМЕНЯЮТСЯ)
 # ============================================================================
 def calculate_correlations(df, features, include_lower_bounds=True):
     """Расчет корреляций Пирсона и Спирмена с p-value"""
     corr_data = []
     
-    # Фильтруем данные в зависимости от включения нижних оценок
     if include_lower_bounds:
-        # Включаем все записи с числовыми значениями
         df_filtered = df.dropna(subset=features)
     else:
-        # Только точные значения
         df_filtered = df[df['x_boundary_type'] == 'exact'].dropna(subset=features)
     
     for i, f1 in enumerate(features):
@@ -406,7 +756,6 @@ def calculate_t_series(row, x_points=50):
     r_B = row['r_B']
     r_D = row['r_D']
     
-    # Используем x_boundary_value для определения максимума
     x_max_val = row.get('x_boundary_value', 0.5)
     if pd.isna(x_max_val) or x_max_val <= 0:
         x_max_val = 0.5
@@ -419,28 +768,23 @@ def calculate_t_series(row, x_points=50):
 
 def feature_importance_analysis(df):
     """Random Forest анализ важности признаков"""
-    # Подготовка данных
     plot_df = df.dropna(subset=['x_boundary_value', 'dr', 'tolerance_factor', 'B_element'])
     
     if len(plot_df) < 10:
         return None, None
     
-    # One-hot encoding для B_element
-    X = pd.get_dummies(plot_df[['dr', 'tolerance_factor', 'B_element']], 
+    X = pd.get_dummies(plot_df[['dr', 'tolerance_factor', 'B_element']],
                        columns=['B_element'])
     y = plot_df['x_boundary_value']
     
-    # Random Forest
     rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
     rf.fit(X, y)
     
-    # Важность признаков
     importance_df = pd.DataFrame({
         'feature': X.columns,
         'importance': rf.feature_importances_
     }).sort_values('importance', ascending=False)
     
-    # Оценка качества
     r2 = rf.score(X, y)
     
     return importance_df, r2
@@ -451,24 +795,20 @@ def get_dopant_statistics(df, include_lower_bounds=True):
         return pd.DataFrame()
     
     if include_lower_bounds:
-        # Включаем все записи
         df_stats = df.dropna(subset=['x_boundary_value'])
     else:
-        # Только точные значения
         df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
     
     if len(df_stats) == 0:
         return pd.DataFrame()
     
-    # Группировка по допантам
-    stats = []
+    stats_list = []
     for dopant in df_stats['D_element'].unique():
         dopant_data = df_stats[df_stats['D_element'] == dopant]['x_boundary_value']
         
-        # Типы значений для этого допанта
         types_in_dopant = df[df['D_element'] == dopant]['x_boundary_type'].value_counts()
         
-        stats.append({
+        stats_list.append({
             'Dopant': dopant,
             'Count': len(dopant_data),
             'Mean': dopant_data.mean(),
@@ -481,17 +821,15 @@ def get_dopant_statistics(df, include_lower_bounds=True):
             'Includes lower bounds': include_lower_bounds
         })
     
-    return pd.DataFrame(stats).sort_values('Median', ascending=False)
+    return pd.DataFrame(stats_list).sort_values('Median', ascending=False)
 
 # ============================================================================
-# ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ
+# СУЩЕСТВУЮЩИЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (НЕ ИЗМЕНЯЮТСЯ)
 # ============================================================================
 def plot_solubility_vs_dr(df, ax):
     """График 1: x(boundary) vs Δr"""
-    # Словарь для хранения информации о комбинациях
     combinations = {}
     
-    # Собираем все данные по комбинациям
     for idx, row in df.iterrows():
         if pd.isna(row.get('dr')) or pd.isna(row.get('x_boundary_value')):
             continue
@@ -510,16 +848,14 @@ def plot_solubility_vs_dr(df, ax):
         
         if row['x_boundary_type'] == 'exact':
             combinations[combo_key]['exact_values'].append((row['dr'], row['x_boundary_value']))
-        else:  # lower_bound
+        else:
             combinations[combo_key]['lower_bounds'].append((row['dr'], row['x_boundary_value']))
     
-    # Рисуем для каждой комбинации
     for combo_key, data in combinations.items():
         b_element = data['b_element']
         color = B_COLORS.get(b_element, B_COLORS['default'])
         marker = D_MARKERS.get(data['d_element'], D_MARKERS['default'])
         
-        # Точные значения (полные маркеры)
         if data['exact_values']:
             dr_exact, x_exact = zip(*data['exact_values'])
             ax.scatter(
@@ -529,25 +865,21 @@ def plot_solubility_vs_dr(df, ax):
                 label=combo_key
             )
         
-        # Нижние оценки (контур маркера без заливки)
         if data['lower_bounds']:
             dr_lower, x_lower = zip(*data['lower_bounds'])
             ax.scatter(
                 dr_lower, x_lower,
-                facecolors='none',  # Без заливки
-                edgecolors=color,    # Цветной контур
+                facecolors='none',
+                edgecolors=color,
                 marker=marker, s=80,
                 alpha=1.0, linewidth=1.5,
-                label=f"{combo_key} (≥)" if not data['exact_values'] else ""  # Добавляем (≥) только если нет точных значений
+                label=f"{combo_key} (≥)" if not data['exact_values'] else ""
             )
     
     ax.set_xlabel('Δr = |r(D) - r(B)| (Å)')
     ax.set_ylabel('x(boundary)')
     ax.set_title('Solubility Limit vs Radius Difference\n(Hollow markers = lower bound estimates)')
-    
-    # Легенда в 3 столбца
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=3, fontsize=8)
-    
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
@@ -557,11 +889,9 @@ def plot_tolerance_factor(df, ax):
         mask = df['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
-        # Разделяем точные значения и нижние оценки
         exact_mask = mask & (df['x_boundary_type'] == 'exact')
         lower_mask = mask & (df['x_boundary_type'] == 'lower_bound')
         
-        # Точные значения
         ax.scatter(
             df.loc[exact_mask, 'tolerance_factor'],
             df.loc[exact_mask, 'x_boundary_value'],
@@ -570,7 +900,6 @@ def plot_tolerance_factor(df, ax):
             label=f"{b_element} (exact)"
         )
         
-        # Нижние оценки
         ax.scatter(
             df.loc[lower_mask, 'tolerance_factor'],
             df.loc[lower_mask, 'x_boundary_value'],
@@ -589,7 +918,6 @@ def plot_tolerance_factor(df, ax):
 
 def plot_heatmap_dr(df):
     """График 3: Тепловая карта Δr"""
-    # Создаем матрицу Δr
     b_elements = sorted(df['B_element'].unique())
     d_elements = sorted(df['D_element'].unique())
     
@@ -604,24 +932,20 @@ def plot_heatmap_dr(df):
     
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Тепловая карта для Δr
     im = ax.imshow(dr_matrix.values.astype(float), cmap='viridis', aspect='auto')
     
-    # Добавляем значения x(boundary) как текст с учетом типа
     for i in range(len(b_elements)):
         for j in range(len(d_elements)):
             x_val = x_boundary_matrix.iloc[i, j]
             x_type = x_boundary_type_matrix.iloc[i, j]
             if not pd.isna(x_val):
                 text_color = 'white'
-                fontweight = 'bold'
-                # Добавляем символ ≥ для нижних оценок
                 if x_type == 'lower_bound':
                     text = f'≥{x_val:.2f}'
                 else:
                     text = f'{x_val:.2f}'
-                ax.text(j, i, text, ha='center', va='center', 
-                       color=text_color, fontweight=fontweight, fontsize=8)
+                ax.text(j, i, text, ha='center', va='center',
+                       color=text_color, fontweight='bold', fontsize=8)
     
     ax.set_xticks(range(len(d_elements)))
     ax.set_yticks(range(len(b_elements)))
@@ -639,11 +963,9 @@ def plot_xmax_vs_xboundary(df, ax):
     """График 4: x(max) vs x(boundary)"""
     valid = df.dropna(subset=['x_max', 'x_boundary_value'])
     
-    # Разделяем по типу
     exact_valid = valid[valid['x_boundary_type'] == 'exact']
     lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
     
-    # Точные значения
     if len(exact_valid) > 0:
         scatter_exact = ax.scatter(
             exact_valid['x_boundary_value'], exact_valid['x_max'],
@@ -652,7 +974,6 @@ def plot_xmax_vs_xboundary(df, ax):
             label='Exact values'
         )
     
-    # Нижние оценки
     if len(lower_valid) > 0:
         scatter_lower = ax.scatter(
             lower_valid['x_boundary_value'], lower_valid['x_max'],
@@ -662,17 +983,19 @@ def plot_xmax_vs_xboundary(df, ax):
             marker='s'
         )
     
-    # Линия y=x
     min_val = min(valid['x_boundary_value'].min(), valid['x_max'].min())
     max_val = max(valid['x_boundary_value'].max(), valid['x_max'].max())
-    ax.plot([min_val, max_val], [min_val, max_val], 
+    ax.plot([min_val, max_val], [min_val, max_val],
             'k--', alpha=0.5, label='y = x')
     
     ax.set_xlabel('x(boundary)')
     ax.set_ylabel('x(max conductivity)')
     ax.set_title('Conductivity Maximum vs Solubility Limit')
     
-    plt.colorbar(scatter_exact if len(exact_valid) > 0 else scatter_lower, ax=ax, label='Δr (Å)')
+    if len(exact_valid) > 0:
+        plt.colorbar(scatter_exact, ax=ax, label='Δr (Å)')
+    elif len(lower_valid) > 0:
+        plt.colorbar(scatter_lower, ax=ax, label='Δr (Å)')
     ax.legend()
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
@@ -685,11 +1008,9 @@ def plot_xmax_vs_tolerance(df, ax):
         mask = valid['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
-        # Разделяем по типу x_boundary
         exact_mask = mask & (valid['x_boundary_type'] == 'exact')
         lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
         
-        # Точные значения
         if exact_mask.any():
             ax.scatter(
                 valid.loc[exact_mask, 'tolerance_factor'],
@@ -699,7 +1020,6 @@ def plot_xmax_vs_tolerance(df, ax):
                 label=f"{b_element} (exact)"
             )
         
-        # Нижние оценки
         if lower_mask.any():
             ax.scatter(
                 valid.loc[lower_mask, 'tolerance_factor'],
@@ -724,11 +1044,9 @@ def plot_relative_position(df, ax):
         mask = valid['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
-        # Разделяем по типу
         exact_mask = mask & (valid['x_boundary_type'] == 'exact')
         lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
         
-        # Точные значения
         if exact_mask.any():
             ax.scatter(
                 valid.loc[exact_mask, 'dr_rel'],
@@ -738,7 +1056,6 @@ def plot_relative_position(df, ax):
                 label=f"{b_element} (exact)"
             )
         
-        # Нижние оценки
         if lower_mask.any():
             ax.scatter(
                 valid.loc[lower_mask, 'dr_rel'],
@@ -758,32 +1075,27 @@ def plot_relative_position(df, ax):
 
 def plot_pca(df):
     """График 7: PCA анализ"""
-    # Подготовка признаков
     features = ['dr', 'dr_rel', 'tolerance_factor', 'x_boundary_value']
     
-    # Удаляем строки с пропусками
     plot_df = df.dropna(subset=features + ['B_element', 'has_impurity'])
     
     if len(plot_df) < 3:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'Insufficient data for PCA', 
+        ax.text(0.5, 0.5, 'Insufficient data for PCA',
                ha='center', va='center', transform=ax.transAxes)
         return fig
     
     X = plot_df[features].values
     
-    # PCA
     pca = PCA(n_components=2)
     X_pca = pca.fit_transform(X)
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     
-    # По B-катионам с учетом типа
     for b_element in plot_df['B_element'].unique():
         mask = plot_df['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
-        # Точные значения
         exact_mask = mask & (plot_df['x_boundary_type'] == 'exact')
         if exact_mask.any():
             ax1.scatter(
@@ -793,7 +1105,6 @@ def plot_pca(df):
                 label=f"{b_element} (exact)"
             )
         
-        # Нижние оценки
         lower_mask = mask & (plot_df['x_boundary_type'] == 'lower_bound')
         if lower_mask.any():
             ax1.scatter(
@@ -809,12 +1120,10 @@ def plot_pca(df):
     ax1.legend()
     ax1.grid(True, alpha=0.3, linestyle='--')
     
-    # По наличию примесей
     colors = {True: '#E41A1C', False: '#377EB8'}
     for has_impurity in [True, False]:
         mask = plot_df['has_impurity'] == has_impurity
         if mask.any():
-            # Точные значения
             exact_mask = mask & (plot_df['x_boundary_type'] == 'exact')
             if exact_mask.any():
                 ax2.scatter(
@@ -824,7 +1133,6 @@ def plot_pca(df):
                     label=f'Impurity: {has_impurity} (exact)'
                 )
             
-            # Нижние оценки
             lower_mask = mask & (plot_df['x_boundary_type'] == 'lower_bound')
             if lower_mask.any():
                 ax2.scatter(
@@ -845,7 +1153,6 @@ def plot_pca(df):
 
 def plot_impurity_phase_diagram(df, ax):
     """График 8: Диаграмма t - Δr с указанием примесных фаз"""
-    # Определяем тип примесной фазы
     def get_impurity_type(impurity):
         if pd.isna(impurity) or impurity == 'none':
             return 'none'
@@ -859,7 +1166,6 @@ def plot_impurity_phase_diagram(df, ax):
     df = df.copy()
     df['impurity_type'] = df['impurity'].apply(get_impurity_type)
     
-    # Цвета для типов примесей
     impurity_colors = {
         'none': '#4DAF4A',
         'BaD2O4': '#E41A1C',
@@ -872,11 +1178,9 @@ def plot_impurity_phase_diagram(df, ax):
     for imp_type, color in impurity_colors.items():
         mask = valid['impurity_type'] == imp_type
         if mask.any():
-            # Разделяем по типу x_boundary
             exact_mask = mask & (valid['x_boundary_type'] == 'exact')
             lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
             
-            # Точные значения
             if exact_mask.any():
                 ax.scatter(
                     valid.loc[exact_mask, 'tolerance_factor'],
@@ -886,7 +1190,6 @@ def plot_impurity_phase_diagram(df, ax):
                     label=f"{imp_type} (exact)"
                 )
             
-            # Нижние оценки
             if lower_mask.any():
                 ax.scatter(
                     valid.loc[lower_mask, 'tolerance_factor'],
@@ -911,11 +1214,9 @@ def plot_temporal_trend(df, ax):
         mask = valid['B_element'] == b_element
         color = B_COLORS.get(b_element, B_COLORS['default'])
         
-        # Разделяем по типу
         exact_mask = mask & (valid['x_boundary_type'] == 'exact')
         lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
         
-        # Точные значения
         if exact_mask.any():
             ax.scatter(
                 valid.loc[exact_mask, 'year'],
@@ -925,7 +1226,6 @@ def plot_temporal_trend(df, ax):
                 label=f"{b_element} (exact)"
             )
         
-        # Нижние оценки
         if lower_mask.any():
             ax.scatter(
                 valid.loc[lower_mask, 'year'],
@@ -942,9 +1242,6 @@ def plot_temporal_trend(df, ax):
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
-# ============================================================================
-# НОВЫЕ ФУНКЦИИ ДЛЯ ГРАФИКОВ (ПРЕДЛОЖЕННЫЕ УЛУЧШЕНИЯ)
-# ============================================================================
 def plot_b_site_statistics(df, include_lower_bounds=True):
     """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)"""
     if include_lower_bounds:
@@ -954,7 +1251,6 @@ def plot_b_site_statistics(df, include_lower_bounds=True):
     
     stats_df = df_stats.groupby('B_element')['x_boundary_value'].agg(['mean', 'median', 'count', 'std']).round(3)
     
-    # Добавляем информацию о типах значений
     type_counts = df.groupby('B_element')['x_boundary_type'].value_counts().unstack(fill_value=0)
     if 'exact' in type_counts.columns:
         stats_df['exact_count'] = type_counts['exact']
@@ -963,11 +1259,10 @@ def plot_b_site_statistics(df, include_lower_bounds=True):
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     
-    # Столбчатая диаграмма со стандартным отклонением
     b_sites = stats_df.index
     x_pos = np.arange(len(b_sites))
     
-    ax1.bar(x_pos, stats_df['mean'], yerr=stats_df['std'], 
+    ax1.bar(x_pos, stats_df['mean'], yerr=stats_df['std'],
             capsize=5, color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
             edgecolor='black', linewidth=0.5, alpha=0.8)
     ax1.set_xticks(x_pos)
@@ -976,10 +1271,9 @@ def plot_b_site_statistics(df, include_lower_bounds=True):
     ax1.set_title(f'Average Solubility by B-site\n({len(df_stats)} samples)')
     ax1.grid(True, alpha=0.3, axis='y')
     
-    # Количество образцов с разбивкой по типам
     bottom = np.zeros(len(b_sites))
     if 'exact_count' in stats_df.columns:
-        ax2.bar(x_pos, stats_df['exact_count'], bottom=bottom, 
+        ax2.bar(x_pos, stats_df['exact_count'], bottom=bottom,
                 label='Exact', color='darkblue', edgecolor='black', linewidth=0.5)
         bottom += stats_df['exact_count']
     if 'lower_bound_count' in stats_df.columns:
@@ -998,7 +1292,6 @@ def plot_b_site_statistics(df, include_lower_bounds=True):
 
 def plot_top_dopants_violin(df, include_lower_bounds=True):
     """График 11: Violin plot для топ-10 допантов по растворимости, отсортированных по ионному радиусу"""
-    # Получаем статистику по допантам
     dopant_stats = get_dopant_statistics(df, include_lower_bounds)
     
     if len(dopant_stats) == 0:
@@ -1006,25 +1299,20 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
         return fig
     
-    # Берем топ-10 допантов по медиане
     top_dopants = dopant_stats.head(10)['Dopant'].tolist()
     
-    # Получаем ионные радиусы для допантов (используем стандартный заряд 3+, КЧ=6)
     dopant_radii = {}
     for dopant in top_dopants:
         radius = IONIC_RADII.get((dopant, 3, 6), None)
         if radius is None:
-            # Пробуем другие заряды если не нашли для 3+
             for charge in [2, 4]:
                 radius = IONIC_RADII.get((dopant, charge, 6), None)
                 if radius:
                     break
         dopant_radii[dopant] = radius if radius else 0
     
-    # Сортируем допанты по ионному радиусу (возрастание)
     sorted_dopants = sorted(top_dopants, key=lambda d: dopant_radii.get(d, 0))
     
-    # СОЗДАЕМ РАСШИРЕННЫЙ ДАТАФРЕЙМ ТОЛЬКО ДЛЯ LOWER BOUNDS
     expanded_data = []
     
     for _, row in df.iterrows():
@@ -1035,16 +1323,13 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             continue
             
         if row['x_boundary_type'] == 'exact':
-            # Для точных значений добавляем точки от x_inv_in до x_boundary_value
             x_inv_in = row.get('x_inv_in', 0)
             if pd.isna(x_inv_in):
                 x_inv_in = 0
             
             x_boundary = row['x_boundary_value']
-            
-            # Создаем несколько точек в диапазоне от начала исследования до границы растворимости
             range_width = x_boundary - x_inv_in
-            n_points = max(3, min(10, int(range_width * 20)))  # Адаптивное количество точек
+            n_points = max(3, min(10, int(range_width * 20)))
             
             for x in np.linspace(x_inv_in, x_boundary, n_points):
                 expanded_data.append({
@@ -1054,7 +1339,6 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                     'original_max': x_boundary
                 })
         elif row['x_boundary_type'] == 'lower_bound' and include_lower_bounds:
-            # Для нижних оценок добавляем несколько точек в диапазоне от x_inv_in до x_inv_end
             x_inv_in = row.get('x_inv_in', 0)
             x_inv_end = row.get('x_inv_end', row['x_boundary_value'])
             
@@ -1070,10 +1354,8 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
                 x_inv_in = 0
                 x_inv_end = row['x_boundary_value']
             
-            # Создаем несколько точек в диапазоне для лучшего представления распределения
             range_width = x_inv_end - x_inv_in
             
-            # Для очень узких диапазонов добавляем меньше точек
             if range_width < 0.05:
                 n_points = 2
             elif range_width < 0.1:
@@ -1081,17 +1363,16 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             elif range_width < 0.2:
                 n_points = 5
             else:
-                n_points = min(10, int(range_width * 15))  # Адаптивное количество точек
+                n_points = min(10, int(range_width * 15))
             
             for x in np.linspace(x_inv_in, x_inv_end, n_points):
                 expanded_data.append({
                     'D_element': row['D_element'],
                     'x_value': x,
                     'type': 'lower_bound',
-                    'weight': 1.0 / n_points  # Вес, чтобы не завышать значимость
+                    'weight': 1.0 / n_points
                 })
     
-    # Создаем расширенный датафрейм
     expanded_df = pd.DataFrame(expanded_data)
     
     if len(expanded_df) == 0:
@@ -1101,14 +1382,12 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
     
     fig, ax = plt.subplots(figsize=(14, 8))
     
-    # Подготовка данных для violin plot
     plot_data = []
     positions = []
     violin_labels = []
     radius_values = []
     
     for i, d in enumerate(sorted_dopants):
-        # Берем данные из расширенного датафрейма
         d_data = expanded_df[expanded_df['D_element'] == d]['x_value'].dropna()
         if len(d_data) > 0:
             plot_data.append(d_data)
@@ -1116,11 +1395,9 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             violin_labels.append(f"{d}")
             radius_values.append(dopant_radii.get(d, 0))
     
-    # Создаем violin plot
     if plot_data:
         parts = ax.violinplot(plot_data, positions=positions, showmeans=False, showmedians=True, widths=0.7)
         
-        # Настройка цветов - градиент от малого к большому радиусу
         cmap = plt.cm.viridis
         norm = plt.Normalize(min(radius_values), max(radius_values))
         
@@ -1130,74 +1407,59 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
             pc.set_edgecolor('navy')
             pc.set_linewidth(1)
         
-        # Настройка медиан
         if 'cmedians' in parts:
             parts['cmedians'].set_color('red')
             parts['cmedians'].set_linewidth(2)
         
-        # Добавляем scatter plot для исходных точных значений
         for i, d in enumerate(sorted_dopants):
-            # Исходные точные значения
-            exact_data = df[(df['D_element'] == d) & 
+            exact_data = df[(df['D_element'] == d) &
                            (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
             if len(exact_data) > 0:
                 x_pos = np.random.normal(positions[i], 0.05, len(exact_data))
-                ax.scatter(x_pos, exact_data, color='darkred', s=80, 
+                ax.scatter(x_pos, exact_data, color='darkred', s=80,
                           alpha=0.9, zorder=3, edgecolors='black', linewidth=1,
                           label='Exact values' if i == 0 else "")
             
-            # Исходные нижние оценки (показываем максимальное значение)
-            lower_data = df[(df['D_element'] == d) & 
+            lower_data = df[(df['D_element'] == d) &
                            (df['x_boundary_type'] == 'lower_bound')]['x_boundary_value'].dropna()
             if len(lower_data) > 0:
                 x_pos = np.random.normal(positions[i], 0.08, len(lower_data))
-                ax.scatter(x_pos, lower_data, color='darkorange', s=80, 
+                ax.scatter(x_pos, lower_data, color='darkorange', s=80,
                           alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=1,
                           label='Lower bounds (≥)' if i == 0 else "")
         
-        # Получаем верхнюю границу графика для позиционирования текста
         y_top = ax.get_ylim()[1]
         
-        # Добавляем информацию о количестве образцов
         for i, d in enumerate(sorted_dopants):
-            stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
-            exact_count = int(stats['Exact values'])
-            lower_count = int(stats['Lower bounds'])
+            stats_row = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
+            exact_count = int(stats_row['Exact values'])
+            lower_count = int(stats_row['Lower bounds'])
             
-            # Текст для отображения (только количество образцов)
             text = f'n={exact_count}'
             if lower_count > 0:
                 text += f' (+{lower_count}≥)'
             
-            # Размещаем текст для количества образцов на одном уровне для всех
-            ax.text(positions[i], y_top * 0.98, text, 
+            ax.text(positions[i], y_top * 0.98, text,
                     ha='center', fontsize=9, va='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
         
-        # Добавляем информацию о диапазоне с "лесенкой" (на разных уровнях)
         for i, d in enumerate(sorted_dopants):
-            # Получаем все исходные значения для этого допанта
             all_values = df[df['D_element'] == d]['x_boundary_value'].dropna()
             if len(all_values) > 0:
                 min_val = all_values.min()
                 max_val = all_values.max()
                 
-                stats = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
-                lower_count = int(stats['Lower bounds'])
+                stats_row = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
+                lower_count = int(stats_row['Lower bounds'])
                 
-                # Для допантов с точными значениями показываем фактические min/max
                 if lower_count == 0:
                     range_text = f'[{min_val:.2f}-{max_val:.2f}]'
                 else:
-                    # Для допантов с lower bounds показываем с символом ≥
                     range_text = f'{min_val:.2f} to ≥{max_val:.2f}'
                 
-                # "Лесенка" для позиций текста диапазона
-                # Четные позиции (0,2,4...) - на одном уровне
-                # Нечетные позиции (1,3,5...) - чуть ниже
-                if i % 2 == 0:  # четные позиции
+                if i % 2 == 0:
                     y_pos = y_top * 0.92
-                else:  # нечетные позиции
+                else:
                     y_pos = y_top * 0.89
                 
                 ax.text(positions[i], y_pos, range_text,
@@ -1213,25 +1475,21 @@ def plot_top_dopants_violin(df, include_lower_bounds=True):
         
         ax.set_xticks(positions)
         ax.set_xticklabels(violin_labels, fontsize=10)
-        ax.set_ylim(bottom=0, top=1.0)  # Фиксируем верхнюю границу для единообразия
+        ax.set_ylim(bottom=0, top=1.0)
         
-        # Добавляем colorbar для радиуса
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, orientation='vertical', pad=0.02)
         cbar.set_label('Ionic Radius (Å)', fontsize=10)
         
-        # Добавляем легенду для точек
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            # Убираем дубликаты в легенде
             unique = dict(zip(labels, handles))
-            ax.legend(unique.values(), unique.keys(), loc='upper right', fontsize=9, 
+            ax.legend(unique.values(), unique.keys(), loc='upper right', fontsize=9,
                      framealpha=0.9, edgecolor='black')
         
         ax.grid(True, alpha=0.3, axis='y', linestyle='--')
         
-        # Добавляем горизонтальные линии для ориентации
         for y in [0.2, 0.4, 0.6, 0.8]:
             ax.axhline(y=y, color='gray', linestyle=':', alpha=0.3, linewidth=0.5)
     
@@ -1243,26 +1501,23 @@ def plot_xmax_vs_boundary_histogram(df):
     """График 12: Гистограмма распределения (x_max - x_boundary)/x_boundary"""
     valid = df.dropna(subset=['x_max', 'x_boundary_value'])
     
-    # Разделяем по типу
     exact_valid = valid[valid['x_boundary_type'] == 'exact']
     lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
-    # Для точных значений
     if len(exact_valid) > 0:
         diff_exact = (exact_valid['x_max'] - exact_valid['x_boundary_value']) / exact_valid['x_boundary_value']
         
-        n, bins, patches = ax1.hist(diff_exact, bins=20, edgecolor='black', 
+        n, bins, patches = ax1.hist(diff_exact, bins=20, edgecolor='black',
                                     color='skyblue', alpha=0.7)
-        ax1.axvline(x=0, color='red', linestyle='--', linewidth=2, 
+        ax1.axvline(x=0, color='red', linestyle='--', linewidth=2,
                    label='x(max) = x(boundary)')
         ax1.axvline(x=diff_exact.median(), color='blue', linestyle=':', linewidth=2,
                    label=f'Median = {diff_exact.median():.3f}')
         
-        # Добавляем проценты
         within_10pct = (abs(diff_exact) < 0.1).mean()
-        ax1.text(0.05, 0.95, f'Within ±10%: {within_10pct:.1%}', 
+        ax1.text(0.05, 0.95, f'Within ±10%: {within_10pct:.1%}',
                 transform=ax1.transAxes, fontsize=10,
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
@@ -1272,20 +1527,18 @@ def plot_xmax_vs_boundary_histogram(df):
         ax1.legend()
         ax1.grid(True, alpha=0.3)
     
-    # Для нижних оценок
     if len(lower_valid) > 0:
         diff_lower = (lower_valid['x_max'] - lower_valid['x_boundary_value']) / lower_valid['x_boundary_value']
         
-        n, bins, patches = ax2.hist(diff_lower, bins=20, edgecolor='black', 
+        n, bins, patches = ax2.hist(diff_lower, bins=20, edgecolor='black',
                                     color='lightgreen', alpha=0.7)
         ax2.axvline(x=0, color='red', linestyle='--', linewidth=2,
                    label='x(max) = x(boundary)')
         ax2.axvline(x=diff_lower.median(), color='blue', linestyle=':', linewidth=2,
                    label=f'Median = {diff_lower.median():.3f}')
         
-        # Добавляем проценты
         within_10pct = (abs(diff_lower) < 0.1).mean()
-        ax2.text(0.05, 0.95, f'Within ±10%: {within_10pct:.1%}', 
+        ax2.text(0.05, 0.95, f'Within ±10%: {within_10pct:.1%}',
                 transform=ax2.transAxes, fontsize=10,
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
@@ -1310,29 +1563,25 @@ def plot_correlation_heatmap(df, include_lower_bounds=True):
     
     if len(corr_df) < 5:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'Insufficient data for correlation', 
+        ax.text(0.5, 0.5, 'Insufficient data for correlation',
                 ha='center', va='center', transform=ax.transAxes)
         return fig
     
-    # Переименовываем колонки для красивого отображения
     corr_df_renamed = corr_df.rename(columns={
         'x_boundary_value': 'x_boundary'
     })
     
-    # Расчет корреляций
     pearson_corr = corr_df_renamed.corr(method='pearson')
     spearman_corr = corr_df_renamed.corr(method='spearman')
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    # Pearson
-    sns.heatmap(pearson_corr, annot=True, fmt='.2f', cmap='coolwarm', 
+    sns.heatmap(pearson_corr, annot=True, fmt='.2f', cmap='coolwarm',
                 center=0, vmin=-1, vmax=1, ax=ax1,
                 cbar_kws={'label': 'Pearson r'})
     ax1.set_title(f'Pearson Correlations\n(n={len(corr_df)})')
     
-    # Spearman
-    sns.heatmap(spearman_corr, annot=True, fmt='.2f', cmap='coolwarm', 
+    sns.heatmap(spearman_corr, annot=True, fmt='.2f', cmap='coolwarm',
                 center=0, vmin=-1, vmax=1, ax=ax2,
                 cbar_kws={'label': 'Spearman ρ'})
     ax2.set_title(f'Spearman Correlations\n(n={len(corr_df)})')
@@ -1343,23 +1592,16 @@ def plot_correlation_heatmap(df, include_lower_bounds=True):
 
 def plot_publication_matrix(df):
     """График 14: Тепловая карта количества публикаций по B-D парам"""
-    # Создаем матрицу с учетом типа значений
     pub_matrix = df.groupby(['B_element', 'D_element']).size().unstack(fill_value=0)
-    
-    # Создаем матрицу для точных значений
     exact_matrix = df[df['x_boundary_type'] == 'exact'].groupby(['B_element', 'D_element']).size().unstack(fill_value=0)
-    
-    # Создаем матрицу для нижних оценок
     lower_matrix = df[df['x_boundary_type'] == 'lower_bound'].groupby(['B_element', 'D_element']).size().unstack(fill_value=0)
     
     fig, ax = plt.subplots(figsize=(12, 8))
     
-    # Тепловая карта для общего количества
     sns.heatmap(pub_matrix, annot=True, fmt='d', cmap='YlOrRd', ax=ax,
                 cbar_kws={'label': 'Number of publications'},
                 linewidths=0.5, linecolor='gray')
     
-    # Добавляем аннотации о типах (можно добавить как текст)
     for i in range(len(pub_matrix.index)):
         for j in range(len(pub_matrix.columns)):
             b_elem = pub_matrix.index[i]
@@ -1372,7 +1614,7 @@ def plot_publication_matrix(df):
                 text = f'{int(exact_count)}'
                 if lower_count > 0:
                     text += f' (+{int(lower_count)}≥)'
-                ax.text(j + 0.5, i + 0.7, text, 
+                ax.text(j + 0.5, i + 0.7, text,
                        ha='center', va='center', fontsize=8,
                        color='black' if pub_matrix.iloc[i, j] < pub_matrix.max().max()/2 else 'white')
     
@@ -1387,22 +1629,21 @@ def plot_distribution_kde(df):
     """График 15: Распределение x_boundary (гистограмма + KDE по B)"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
-    # Общее распределение с разделением по типам
     exact_data = df[df['x_boundary_type'] == 'exact']['x_boundary_value'].dropna()
     lower_data = df[df['x_boundary_type'] == 'lower_bound']['x_boundary_value'].dropna()
     
     if len(exact_data) > 0:
-        ax1.hist(exact_data, bins=20, edgecolor='black', 
+        ax1.hist(exact_data, bins=20, edgecolor='black',
                  alpha=0.7, color='blue', density=True, label='Exact')
     
     if len(lower_data) > 0:
-        ax1.hist(lower_data, bins=20, edgecolor='black', 
+        ax1.hist(lower_data, bins=20, edgecolor='black',
                  alpha=0.3, color='green', density=True, label='Lower bound')
     
-    sns.kdeplot(data=exact_data, ax=ax1, color='darkblue', 
+    sns.kdeplot(data=exact_data, ax=ax1, color='darkblue',
                 linewidth=2, label='KDE (exact)')
     if len(lower_data) > 0:
-        sns.kdeplot(data=lower_data, ax=ax1, color='darkgreen', 
+        sns.kdeplot(data=lower_data, ax=ax1, color='darkgreen',
                     linewidth=2, linestyle='--', label='KDE (lower)')
     
     ax1.set_xlabel('x(boundary)')
@@ -1411,22 +1652,19 @@ def plot_distribution_kde(df):
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     
-    # По B-элементам с учетом типа
     for b_element in df['B_element'].unique():
         color = B_COLORS.get(b_element, 'gray')
         
-        # Точные значения
-        exact_data_b = df[(df['B_element'] == b_element) & 
+        exact_data_b = df[(df['B_element'] == b_element) &
                           (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
         if len(exact_data_b) > 1:
-            sns.kdeplot(data=exact_data_b, label=f"{b_element} (exact)", ax=ax2, 
+            sns.kdeplot(data=exact_data_b, label=f"{b_element} (exact)", ax=ax2,
                         linewidth=2, color=color, linestyle='-')
         
-        # Нижние оценки
-        lower_data_b = df[(df['B_element'] == b_element) & 
+        lower_data_b = df[(df['B_element'] == b_element) &
                           (df['x_boundary_type'] == 'lower_bound')]['x_boundary_value'].dropna()
         if len(lower_data_b) > 1:
-            sns.kdeplot(data=lower_data_b, label=f"{b_element} (≥)", ax=ax2, 
+            sns.kdeplot(data=lower_data_b, label=f"{b_element} (≥)", ax=ax2,
                         linewidth=2, color=color, linestyle='--', alpha=0.7)
     
     ax2.set_xlabel('x(boundary)')
@@ -1449,11 +1687,9 @@ def plot_shift_vs_dr_bubble(df):
     
     fig, ax = plt.subplots(figsize=(12, 8))
     
-    # Разделяем по типу
     exact_valid = valid[valid['x_boundary_type'] == 'exact']
     lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
     
-    # Точные значения
     if len(exact_valid) > 0:
         scatter_exact = ax.scatter(
             exact_valid['dr'],
@@ -1467,7 +1703,6 @@ def plot_shift_vs_dr_bubble(df):
             label='Exact values'
         )
     
-    # Нижние оценки
     if len(lower_valid) > 0:
         scatter_lower = ax.scatter(
             lower_valid['dr'],
@@ -1484,11 +1719,10 @@ def plot_shift_vs_dr_bubble(df):
     
     ax.axhline(y=0, color='red', linestyle='--', alpha=0.5, linewidth=2)
     
-    # Добавить подписи для точек с большим отклонением
     valid_sorted = valid.nlargest(5, 'x_diff_norm')
     for idx, row in valid_sorted.iterrows():
         marker_style = ' (≥)' if row['x_boundary_type'] == 'lower_bound' else ''
-        ax.annotate(f"{row['B_element']}-{row['D_element']}{marker_style}", 
+        ax.annotate(f"{row['B_element']}-{row['D_element']}{marker_style}",
                     (row['dr'], row['x_max'] - row['x_boundary_value']),
                     fontsize=8, ha='center')
     
@@ -1510,7 +1744,6 @@ def plot_tolerance_evolution(df):
     """График 17: Эволюция tolerance factor с допированием"""
     fig, ax = plt.subplots(figsize=(12, 8))
     
-    # Выбираем до 10 случайных систем для наглядности
     sample_size = min(10, len(df))
     sampled_df = df.sample(sample_size, random_state=42) if sample_size > 0 else df
     
@@ -1520,24 +1753,22 @@ def plot_tolerance_evolution(df):
             x_vals, t_vals = result
             label = f"{row['B_element']}-{row['D_element']}"
             
-            # Разный стиль линии в зависимости от типа
             linestyle = '--' if row['x_boundary_type'] == 'lower_bound' else '-'
             alpha = 0.5 if row['x_boundary_type'] == 'lower_bound' else 0.9
             
             if not pd.isna(row.get('x_boundary_value')):
-                # Отмечаем точку границы растворимости
                 boundary_idx = np.argmin(np.abs(x_vals - row['x_boundary_value']))
-                ax.plot(x_vals, t_vals, linewidth=2, alpha=alpha, 
+                ax.plot(x_vals, t_vals, linewidth=2, alpha=alpha,
                        linestyle=linestyle, label=label)
                 marker_color = 'red' if row['x_boundary_type'] == 'exact' else 'orange'
-                ax.plot(x_vals[boundary_idx], t_vals[boundary_idx], 'o', 
+                ax.plot(x_vals[boundary_idx], t_vals[boundary_idx], 'o',
                        color=marker_color, markersize=8, alpha=alpha,
                        markeredgecolor='black')
             else:
-                ax.plot(x_vals, t_vals, linewidth=2, alpha=alpha, 
+                ax.plot(x_vals, t_vals, linewidth=2, alpha=alpha,
                        linestyle=linestyle, label=label)
     
-    ax.axhline(y=1.0, color='black', linestyle='--', alpha=0.5, 
+    ax.axhline(y=1.0, color='black', linestyle='--', alpha=0.5,
                label='Ideal cubic (t=1)', linewidth=2)
     ax.set_xlabel('Dopant concentration x')
     ax.set_ylabel('Tolerance Factor')
@@ -1559,32 +1790,27 @@ def plot_critical_dr_threshold(df):
     
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Разделяем по типу x_boundary
     exact_valid = valid[valid['x_boundary_type'] == 'exact']
     lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
     
-    # Кумулятивная доля примесей для точных значений
     if len(exact_valid) > 0:
         x_exact = exact_valid['dr'].values
         y_exact = exact_valid['has_impurity'].astype(int).cumsum() / np.arange(1, len(exact_valid)+1)
         ax.plot(x_exact, y_exact, 'b-', linewidth=2, label='Exact values')
         ax.fill_between(x_exact, 0, y_exact, alpha=0.2, color='blue')
     
-    # Кумулятивная доля примесей для нижних оценок
     if len(lower_valid) > 0:
         x_lower = lower_valid['dr'].values
         y_lower = lower_valid['has_impurity'].astype(int).cumsum() / np.arange(1, len(lower_valid)+1)
         ax.plot(x_lower, y_lower, 'g--', linewidth=2, label='Lower bounds', alpha=0.7)
         ax.fill_between(x_lower, 0, y_lower, alpha=0.1, color='green')
     
-    # Находим точку перегиба (порог) для точных значений
     if len(exact_valid) > 5:
         y_diff = np.diff(y_exact)
-        from scipy.ndimage import gaussian_filter1d
         y_diff_smooth = gaussian_filter1d(y_diff, sigma=2)
         threshold_idx = np.argmax(y_diff_smooth[:len(y_diff_smooth)//2])
         if threshold_idx < len(x_exact)-1:
-            ax.axvline(x=x_exact[threshold_idx], color='red', linestyle='--', 
+            ax.axvline(x=x_exact[threshold_idx], color='red', linestyle='--',
                        linewidth=2, label=f'Threshold Δr ≈ {x_exact[threshold_idx]:.3f} Å')
     
     ax.set_xlabel('Δr (Å)')
@@ -1600,54 +1826,48 @@ def plot_dopant_comparison_boxplot(df, selected_dopant, include_lower_bounds=Tru
     if include_lower_bounds:
         plot_df = df[df['D_element'] == selected_dopant].dropna(subset=['x_boundary_value'])
     else:
-        plot_df = df[(df['D_element'] == selected_dopant) & 
+        plot_df = df[(df['D_element'] == selected_dopant) &
                      (df['x_boundary_type'] == 'exact')].dropna(subset=['x_boundary_value'])
     
     if len(plot_df) < 2:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, f'Insufficient data for {selected_dopant}', 
+        ax.text(0.5, 0.5, f'Insufficient data for {selected_dopant}',
                 ha='center', va='center')
         return fig
     
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Подготовка данных по B-сайтам
     b_sites = plot_df['B_element'].unique()
     data_by_b = []
     for b in b_sites:
         if include_lower_bounds:
             data = plot_df[plot_df['B_element'] == b]['x_boundary_value'].dropna()
         else:
-            data = plot_df[(plot_df['B_element'] == b) & 
+            data = plot_df[(plot_df['B_element'] == b) &
                           (plot_df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
         data_by_b.append(data)
     
-    # Boxplot
     bp = ax.boxplot(data_by_b,
                     labels=b_sites,
                     patch_artist=True)
     
-    # Раскрашиваем боксы
     for i, b in enumerate(b_sites):
         bp['boxes'][i].set_facecolor(B_COLORS.get(b, 'lightgray'))
         bp['boxes'][i].set_alpha(0.7)
     
-    # Наложить точки с разделением по типам
     for i, b in enumerate(b_sites):
-        # Точные значения
-        exact_data = plot_df[(plot_df['B_element'] == b) & 
+        exact_data = plot_df[(plot_df['B_element'] == b) &
                             (plot_df['x_boundary_type'] == 'exact')]['x_boundary_value']
         if len(exact_data) > 0:
             x_pos = np.random.normal(i + 1, 0.05, len(exact_data))
-            ax.scatter(x_pos, exact_data, color='red', s=50, 
+            ax.scatter(x_pos, exact_data, color='red', s=50,
                        alpha=0.7, zorder=3, label='Exact' if i == 0 else '')
         
-        # Нижние оценки
-        lower_data = plot_df[(plot_df['B_element'] == b) & 
+        lower_data = plot_df[(plot_df['B_element'] == b) &
                             (plot_df['x_boundary_type'] == 'lower_bound')]['x_boundary_value']
         if len(lower_data) > 0:
             x_pos = np.random.normal(i + 1, 0.05, len(lower_data))
-            ax.scatter(x_pos, lower_data, color='red', s=50, 
+            ax.scatter(x_pos, lower_data, color='red', s=50,
                        alpha=0.2, zorder=2, marker='s', label='Lower bound' if i == 0 else '')
     
     ax.set_xlabel('B-site')
@@ -1664,27 +1884,24 @@ def plot_feature_importance(df):
     
     if importance_df is None:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'Insufficient data for feature importance', 
+        ax.text(0.5, 0.5, 'Insufficient data for feature importance',
                 ha='center', va='center')
         return fig, None
     
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Очищаем названия признаков для отображения
     importance_df['feature_clean'] = importance_df['feature'].str.replace('B_element_', 'B=')
     
-    # Горизонтальная столбчатая диаграмма
     y_pos = np.arange(len(importance_df))
-    ax.barh(y_pos, importance_df['importance'], 
+    ax.barh(y_pos, importance_df['importance'],
             color='steelblue', edgecolor='black', linewidth=0.5)
     ax.set_yticks(y_pos)
     ax.set_yticklabels(importance_df['feature_clean'])
     ax.set_xlabel('Feature Importance')
     ax.set_title(f'Random Forest: Factors Affecting Solubility\n(R² = {r2:.3f}, includes lower bounds)')
-    ax.invert_yaxis()  # Чтобы самое важное было сверху
+    ax.invert_yaxis()
     ax.grid(True, alpha=0.3, axis='x')
     
-    # Добавляем значения на концах столбцов
     for i, v in enumerate(importance_df['importance']):
         ax.text(v + 0.01, i, f'{v:.3f}', va='center')
     
@@ -1702,11 +1919,9 @@ def plot_goldschmidt_bubble(df):
     
     fig, ax = plt.subplots(figsize=(14, 8))
     
-    # Разделяем по типу
     exact_valid = valid[valid['x_boundary_type'] == 'exact']
     lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
     
-    # Точные значения
     if len(exact_valid) > 0:
         scatter_exact = ax.scatter(
             exact_valid['tolerance_factor'],
@@ -1720,7 +1935,6 @@ def plot_goldschmidt_bubble(df):
             label='Exact values'
         )
     
-    # Нижние оценки
     if len(lower_valid) > 0:
         scatter_lower = ax.scatter(
             lower_valid['tolerance_factor'],
@@ -1735,7 +1949,6 @@ def plot_goldschmidt_bubble(df):
             label='Lower bounds'
         )
     
-    # Выделяем точки с примесями
     impurity_points = valid[valid['has_impurity']]
     if len(impurity_points) > 0:
         ax.scatter(
@@ -1748,10 +1961,9 @@ def plot_goldschmidt_bubble(df):
             label='With impurities'
         )
     
-    # Добавляем подписи для некоторых точек
     for idx, row in valid.nlargest(5, 'x_boundary_value').iterrows():
         marker_style = ' (≥)' if row['x_boundary_type'] == 'lower_bound' else ''
-        ax.annotate(f"{row['B_element']}-{row['D_element']}{marker_style}", 
+        ax.annotate(f"{row['B_element']}-{row['D_element']}{marker_style}",
                     (row['tolerance_factor'], row['dr']),
                     fontsize=8, ha='center')
     
@@ -1772,6 +1984,371 @@ def plot_goldschmidt_bubble(df):
     return fig
 
 # ============================================================================
+# НОВЫЕ ФУНКЦИИ ДЛЯ ГРАФИКОВ (ОБЪЕМНЫЕ И ТЕРМОДИНАМИЧЕСКИЕ)
+# ============================================================================
+def plot_free_volume_vs_xboundary(df, ax):
+    """График 30: Свободный объем vs x_boundary"""
+    valid = df.dropna(subset=['free_volume_fraction', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for free volume analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+        lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+        
+        if exact_mask.any():
+            ax.scatter(
+                valid.loc[exact_mask, 'free_volume_fraction'],
+                valid.loc[exact_mask, 'x_boundary_value'],
+                color=color, s=100, alpha=0.9,
+                edgecolors='black', linewidth=0.5,
+                label=f"{b_element} (exact)"
+            )
+        
+        if lower_mask.any():
+            ax.scatter(
+                valid.loc[lower_mask, 'free_volume_fraction'],
+                valid.loc[lower_mask, 'x_boundary_value'],
+                color=color, s=100, alpha=0.3,
+                edgecolors='black', linewidth=0.5,
+                label=f"{b_element} (≥)",
+                marker='s'
+            )
+    
+    ax.set_xlabel('Free Volume Fraction φ = V_free / V_cell')
+    ax.set_ylabel('x(boundary)')
+    ax.set_title('Solubility Limit vs Free Volume Fraction')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_formation_energy_vs_xboundary(df, ax):
+    """График 31: Энергия образования vs x_boundary"""
+    valid = df.dropna(subset=['E_form', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for formation energy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+        lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+        
+        if exact_mask.any():
+            ax.scatter(
+                valid.loc[exact_mask, 'E_form'],
+                valid.loc[exact_mask, 'x_boundary_value'],
+                color=color, s=100, alpha=0.9,
+                edgecolors='black', linewidth=0.5,
+                label=f"{b_element} (exact)"
+            )
+        
+        if lower_mask.any():
+            ax.scatter(
+                valid.loc[lower_mask, 'E_form'],
+                valid.loc[lower_mask, 'x_boundary_value'],
+                color=color, s=100, alpha=0.3,
+                edgecolors='black', linewidth=0.5,
+                label=f"{b_element} (≥)",
+                marker='s'
+            )
+    
+    ax.set_xlabel('Formation Energy (eV/atom)')
+    ax.set_ylabel('x(boundary)')
+    ax.set_title('Solubility Limit vs Formation Energy')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_3d_stability_phase(df):
+    """График 32: 3D фазовая диаграмма (t, Δr, x_boundary)"""
+    valid = df.dropna(subset=['tolerance_factor', 'dr', 'x_boundary_value'])
+    
+    if len(valid) < 4:
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.text2D(0.5, 0.5, 'Insufficient data for 3D plot',
+                  ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    exact_valid = valid[valid['x_boundary_type'] == 'exact']
+    lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
+    
+    if len(exact_valid) > 0:
+        scatter_exact = ax.scatter(
+            exact_valid['tolerance_factor'],
+            exact_valid['dr'],
+            exact_valid['x_boundary_value'],
+            c=exact_valid['x_boundary_value'],
+            cmap='viridis',
+            s=80,
+            alpha=0.9,
+            edgecolors='black',
+            linewidth=0.5,
+            label='Exact values'
+        )
+    
+    if len(lower_valid) > 0:
+        ax.scatter(
+            lower_valid['tolerance_factor'],
+            lower_valid['dr'],
+            lower_valid['x_boundary_value'],
+            c=lower_valid['x_boundary_value'],
+            cmap='viridis',
+            s=80,
+            alpha=0.3,
+            edgecolors='black',
+            linewidth=0.5,
+            marker='s',
+            label='Lower bounds'
+        )
+    
+    ax.set_xlabel('Tolerance Factor (t)')
+    ax.set_ylabel('Δr (Å)')
+    ax.set_zlabel('x(boundary)')
+    ax.set_title('3D Stability Phase Diagram\n(Bubble color = x_boundary)')
+    ax.legend()
+    
+    if len(exact_valid) > 0 or len(lower_valid) > 0:
+        plt.colorbar(scatter_exact if len(exact_valid) > 0 else scatter_lower, ax=ax, label='x(boundary)')
+    
+    return fig
+
+def plot_pairplot_volumetric(df, include_lower_bounds=True):
+    """График 33: Pairplot объемных и радиусных параметров"""
+    features = ['dr', 'tolerance_factor', 'free_volume_fraction', 'packing_factor', 'x_boundary_value']
+    
+    if include_lower_bounds:
+        plot_df = df[features].dropna()
+    else:
+        plot_df = df[df['x_boundary_type'] == 'exact'][features].dropna()
+    
+    if len(plot_df) < 10:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data for pairplot',
+                ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    plot_df_renamed = plot_df.rename(columns={
+        'free_volume_fraction': 'φ (free volume)',
+        'packing_factor': 'packing factor',
+        'x_boundary_value': 'x_boundary'
+    })
+    
+    fig = sns.pairplot(plot_df_renamed, diag_kind='kde',
+                       plot_kws={'alpha': 0.6, 'edgecolor': 'black', 's': 50},
+                       diag_kws={'color': 'navy', 'alpha': 0.7})
+    
+    fig.fig.suptitle(f'Correlation Between Volumetric and Geometric Parameters\n'
+                     f'({"including" if include_lower_bounds else "excluding"} lower bounds)',
+                     y=1.02, fontsize=14)
+    
+    return fig
+
+def plot_density_prediction(df):
+    """График 34: Сравнение расчетной и справочной плотности"""
+    valid = df.dropna(subset=['molar_mass', 'packing_factor'])
+    
+    if len(valid) < 3:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data for density prediction',
+                ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    exact_valid = valid[valid['x_boundary_type'] == 'exact']
+    lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
+    
+    # Расчет теоретической плотности из молярной массы и объема ячейки
+    # Используем плотность из базовой структуры как референс
+    base_densities = []
+    for idx, row in valid.iterrows():
+        a_elem = row.get('A_element', 'Ba')
+        b_elem = row['B_element']
+        base_props = get_base_properties(a_elem, b_elem)
+        if base_props:
+            base_densities.append(base_props['density'])
+        else:
+            base_densities.append(None)
+    
+    valid = valid.copy()
+    valid['base_density'] = base_densities
+    valid = valid.dropna(subset=['base_density'])
+    
+    if len(valid) == 0:
+        ax.text(0.5, 0.5, 'No base density data available',
+                ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    exact_valid = valid[valid['x_boundary_type'] == 'exact']
+    lower_valid = valid[valid['x_boundary_type'] == 'lower_bound']
+    
+    if len(exact_valid) > 0:
+        ax.scatter(
+            exact_valid['base_density'],
+            exact_valid['base_density'] * (1 - exact_valid['free_volume_fraction']),
+            color='blue', s=100, alpha=0.9,
+            edgecolors='black', linewidth=0.5,
+            label='Predicted density (exact)'
+        )
+    
+    if len(lower_valid) > 0:
+        ax.scatter(
+            lower_valid['base_density'],
+            lower_valid['base_density'] * (1 - lower_valid['free_volume_fraction']),
+            color='green', s=100, alpha=0.5,
+            edgecolors='black', linewidth=0.5,
+            label='Predicted density (lower bounds)',
+            marker='s'
+        )
+    
+    min_val = min(valid['base_density'].min(), valid['base_density'].min())
+    max_val = max(valid['base_density'].max(), valid['base_density'].max())
+    ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label='y = x (ideal)')
+    
+    ax.set_xlabel('Reference Density from Base Structure (g/cm³)')
+    ax.set_ylabel('Predicted Density (g/cm³)')
+    ax.set_title('Density Prediction from Volumetric Analysis\n'
+                 'ρ_pred = ρ_base × (1 - φ)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    return fig
+
+def plot_radar_chart(df):
+    """График 35: Radar chart для сравнения систем"""
+    # Выбираем топ-5 систем по растворимости
+    valid = df.dropna(subset=['x_boundary_value', 'tolerance_factor', 'dr', 'free_volume_fraction', 'packing_factor'])
+    valid = valid[valid['x_boundary_type'] == 'exact']
+    
+    if len(valid) < 3:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Insufficient data for radar chart (need exact values)',
+                ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    top_systems = valid.nlargest(5, 'x_boundary_value')
+    
+    # Нормализованные параметры
+    params = ['x_boundary_value', 'tolerance_factor', 'free_volume_fraction', 'packing_factor', 'dr_rel']
+    param_names = ['Solubility', 'Tolerance\nFactor', 'Free Volume\nFraction', 'Packing\nFactor', 'Relative\nΔr']
+    
+    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'))
+    
+    angles = np.linspace(0, 2 * np.pi, len(params), endpoint=False).tolist()
+    angles += angles[:1]
+    
+    colors = plt.cm.Set3(np.linspace(0, 1, len(top_systems)))
+    
+    for idx, (_, row) in enumerate(top_systems.iterrows()):
+        values = []
+        for param in params:
+            val = row[param]
+            # Нормализация
+            if param == 'x_boundary_value':
+                norm_val = val / valid['x_boundary_value'].max()
+            elif param == 'tolerance_factor':
+                norm_val = val / valid['tolerance_factor'].max()
+            elif param == 'free_volume_fraction':
+                norm_val = val / valid['free_volume_fraction'].max() if valid['free_volume_fraction'].max() > 0 else 0
+            elif param == 'packing_factor':
+                norm_val = val / valid['packing_factor'].max()
+            elif param == 'dr_rel':
+                norm_val = val / valid['dr_rel'].max() if valid['dr_rel'].max() > 0 else 0
+            else:
+                norm_val = 0
+            values.append(norm_val)
+        
+        values += values[:1]
+        
+        label = f"{row['B_element']}-{row['D_element']}"
+        ax.plot(angles, values, 'o-', linewidth=2, color=colors[idx], label=label)
+        ax.fill(angles, values, alpha=0.15, color=colors[idx])
+    
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(param_names, fontsize=10)
+    ax.set_ylim(0, 1)
+    ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+    ax.set_yticklabels(['0.2', '0.4', '0.6', '0.8', '1.0'], fontsize=8)
+    ax.set_title('Material Property Profile\n(Top 5 Systems by Solubility)', pad=20, fontsize=14)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+    ax.grid(True)
+    
+    return fig
+
+# ============================================================================
+# ФУНКЦИЯ ПОСТРОЕНИЯ КОМПЛЕКСНОЙ КОРРЕЛЯЦИОННОЙ МАТРИЦЫ
+# ============================================================================
+def plot_comprehensive_correlation_matrix(df, include_lower_bounds=True):
+    """График: Полная корреляционная матрица со всеми дескрипторами"""
+    features = ['dr', 'dr_rel', 'tolerance_factor', 't_gradient', 't_range',
+                'Δχ', 'Δχ_gradient', 'free_volume_fraction', 'packing_factor',
+                'E_form', 'lattice_strain_energy', 'oxygen_vacancy_conc',
+                'x_boundary_value', 'x_max']
+    
+    available_features = [f for f in features if f in df.columns]
+    
+    if include_lower_bounds:
+        corr_df = df[available_features].dropna()
+    else:
+        corr_df = df[df['x_boundary_type'] == 'exact'][available_features].dropna()
+    
+    if len(corr_df) < 5:
+        fig, ax = plt.subplots(figsize=(12, 10))
+        ax.text(0.5, 0.5, 'Insufficient data for comprehensive correlation',
+                ha='center', va='center', transform=ax.transAxes)
+        return fig
+    
+    # Переименовываем для читаемости
+    rename_map = {
+        'dr': 'Δr',
+        'dr_rel': 'Δr/r_B',
+        'tolerance_factor': 't',
+        't_gradient': 'dt/dx',
+        't_range': 'Δ t',
+        'Δχ': '|Δχ|',
+        'Δχ_gradient': 'dΔχ/dx',
+        'free_volume_fraction': 'φ',
+        'packing_factor': 'η',
+        'E_form': 'E_form',
+        'lattice_strain_energy': 'ε_strain',
+        'oxygen_vacancy_conc': '[V_O]',
+        'x_boundary_value': 'x_boundary',
+        'x_max': 'x_max'
+    }
+    
+    corr_df_renamed = corr_df.rename(columns=rename_map)
+    
+    fig, ax = plt.subplots(figsize=(14, 12))
+    
+    mask = np.triu(np.ones_like(corr_df_renamed.corr(), dtype=bool))
+    sns.heatmap(corr_df_renamed.corr(), mask=mask, annot=True, fmt='.2f',
+                cmap='coolwarm', center=0, vmin=-1, vmax=1,
+                square=True, linewidths=0.5, ax=ax,
+                cbar_kws={'label': 'Pearson Correlation', 'shrink': 0.8})
+    
+    ax.set_title(f'Comprehensive Correlation Matrix\n'
+                 f'({"including" if include_lower_bounds else "excluding"} lower bounds, n={len(corr_df)})',
+                 fontsize=14, pad=20)
+    
+    plt.tight_layout()
+    return fig
+
+# ============================================================================
 # ОСНОВНОЕ STREAMLIT-ПРИЛОЖЕНИЕ
 # ============================================================================
 def main():
@@ -1788,9 +2365,8 @@ def main():
     with st.sidebar:
         st.header("⚙️ Controls")
         
-        # Загрузка файла
         uploaded_file = st.file_uploader(
-            "Upload Excel file", 
+            "Upload Excel file",
             type=['xlsx', 'xls'],
             help="Upload your data file with perovskite compositions"
         )
@@ -1814,31 +2390,26 @@ def main():
         st.markdown("---")
         st.header("📊 Plot Settings")
         
-        # Настройки отображения
         show_grid = st.checkbox("Show grid", value=True)
         show_legend = st.checkbox("Show legend", value=True)
         
-        # НОВАЯ ОПЦИЯ: включение нижних оценок
         st.markdown("---")
         st.header("🔢 Data Processing")
         include_lower_bounds = st.checkbox(
-            "Include lower bound estimates (≥)", 
+            "Include lower bound estimates (≥)",
             value=True,
             help="When enabled, '-' in x(boundary) is treated as ≥ x(inv,end)"
         )
         
-        # Фильтры
         st.markdown("---")
         st.header("🔍 Filters")
         
-        # Загрузка и обработка данных
         try:
             df = pd.read_excel(uploaded_file, engine='openpyxl')
             
             with st.spinner("Processing data..."):
                 df_processed = process_data(df)
                 
-                # Фильтр по B-элементу
                 if 'B_element' in df_processed.columns:
                     selected_b = st.multiselect(
                         "B-site elements",
@@ -1849,7 +2420,6 @@ def main():
                     selected_b = []
                     st.error("B_element column not found")
                 
-                # Фильтр по D-элементу
                 if 'D_element' in df_processed.columns:
                     selected_d = st.multiselect(
                         "Dopant elements",
@@ -1860,13 +2430,11 @@ def main():
                     selected_d = []
                     st.error("D_element column not found")
                 
-                # Фильтр по наличию примесей
                 impurity_filter = st.radio(
                     "Impurity phases",
                     options=['All', 'With impurities', 'Without impurities']
                 )
                 
-                # Фильтр по типу x_boundary
                 x_boundary_type_filter = st.multiselect(
                     "x(boundary) type",
                     options=['exact', 'lower_bound'],
@@ -1874,7 +2442,6 @@ def main():
                     help="Select which types of x(boundary) to include"
                 )
                 
-                # Применяем фильтры
                 filtered_df = df_processed.copy()
                 
                 if selected_b and 'B_element' in filtered_df.columns:
@@ -1895,9 +2462,7 @@ def main():
             st.error(f"Error loading file: {str(e)}")
             return
     
-    # Основная область
     if uploaded_file is not None and len(filtered_df) > 0:
-        # Статистика с учетом включения нижних оценок
         st.subheader("📈 Data Overview")
         col1, col2, col3, col4, col5 = st.columns(5)
         
@@ -1916,9 +2481,6 @@ def main():
                 lower_count = (filtered_df['x_boundary_type'] == 'lower_bound').sum()
                 st.metric("Exact / Lower", f"{exact_count} / {lower_count}")
         
-        # ============================================================================
-        # НОВЫЕ МЕТРИКИ И СТАТИСТИКА
-        # ============================================================================
         st.markdown("---")
         st.subheader("📊 Quick Statistics")
         
@@ -1954,16 +2516,14 @@ def main():
                     st.metric("Median relative position", f"{diff.median():.3f}")
                     st.metric("Samples with x(max) > x(boundary)", f"{(diff > 0).mean():.1%}")
         
-        # Таблица с данными
         with st.expander("📋 View processed data"):
-            # Показываем ключевые колонки
-            display_cols = ['B_element', 'D_element', 'x_boundary_value', 'x_boundary_type', 
-                           'x_boundary_raw', 'x_inv_in', 'x_inv_end', 'x_max', 
-                           'dr', 'tolerance_factor', 'has_impurity', 'year']
+            display_cols = ['B_element', 'D_element', 'x_boundary_value', 'x_boundary_type',
+                           'x_boundary_raw', 'x_inv_in', 'x_inv_end', 'x_max',
+                           'dr', 'tolerance_factor', 'free_volume_fraction', 'packing_factor',
+                           'E_form', 'Δχ', 'has_impurity', 'year']
             available_cols = [col for col in display_cols if col in filtered_df.columns]
             st.dataframe(filtered_df[available_cols], use_container_width=True)
             
-            # Кнопка для скачивания
             csv = filtered_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 "Download processed data as CSV",
@@ -1974,14 +2534,13 @@ def main():
         
         st.markdown("---")
         
-        # ============================================================================
-        # ВКЛАДКИ С ГРАФИКАМИ
-        # ============================================================================
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📊 Basic Statistics", 
-            "🔬 Solubility Analysis", 
+        # Вкладки
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📊 Basic Statistics",
+            "🔬 Solubility Analysis",
             "⚡ Conductivity Analysis",
             "📈 Advanced Visualization",
+            "🧊 Volumetric & Thermodynamic",
             "🤖 ML Insights"
         ])
         
@@ -1991,7 +2550,6 @@ def main():
         with tab1:
             st.subheader("Basic Statistical Analysis")
             
-            # График 10: Статистика по B-элементам
             if len(filtered_df) > 0:
                 fig, stats_df = plot_b_site_statistics(filtered_df, include_lower_bounds)
                 st.pyplot(fig)
@@ -2000,28 +2558,31 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                # График 12: Гистограмма распределения x_max относительно x_boundary
                 if 'x_max' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
                     fig = plot_xmax_vs_boundary_histogram(filtered_df)
                     st.pyplot(fig)
                     plt.close(fig)
             
             with col2:
-                # График 15: Распределение x_boundary
                 if 'x_boundary_value' in filtered_df.columns:
                     fig = plot_distribution_kde(filtered_df)
                     st.pyplot(fig)
                     plt.close(fig)
             
-            # График 13: Корреляционная матрица
             if len(filtered_df) > 0:
                 fig = plot_correlation_heatmap(filtered_df, include_lower_bounds)
                 st.pyplot(fig)
                 plt.close(fig)
             
-            # Детальная корреляция с p-value
+            # Полная корреляционная матрица
+            st.subheader("Comprehensive Correlation Matrix")
+            fig = plot_comprehensive_correlation_matrix(filtered_df, include_lower_bounds)
+            st.pyplot(fig)
+            plt.close(fig)
+            
             st.subheader("Detailed Correlations with p-values")
-            features = ['dr', 'dr_rel', 'tolerance_factor', 'x_boundary_value', 'x_max']
+            features = ['dr', 'dr_rel', 'tolerance_factor', 'free_volume_fraction',
+                        'packing_factor', 'x_boundary_value', 'x_max']
             available_features = [f for f in features if f in filtered_df.columns]
             if len(available_features) >= 2:
                 corr_df = calculate_correlations(filtered_df, available_features, include_lower_bounds)
@@ -2034,7 +2595,6 @@ def main():
         with tab2:
             st.subheader("Solubility Limit Analysis")
             
-            # Выбор графиков для отображения
             solubility_plots = st.multiselect(
                 "Select solubility plots to display",
                 options=[
@@ -2076,16 +2636,14 @@ def main():
                     
                     elif plot_name == "Top Dopants Violin Plot":
                         if 'x_boundary_value' in filtered_df.columns and 'D_element' in filtered_df.columns:
-                            # Временно сохраняем и показываем отдельно
                             plt.close(fig)
                             violin_fig = plot_top_dopants_violin(filtered_df, include_lower_bounds)
                             st.pyplot(violin_fig)
                             plt.close(violin_fig)
-                            plot_idx -= 1  # не занимаем место в сетке
+                            plot_idx -= 1
                     
                     elif plot_name == "Critical Δr Threshold":
                         if 'dr' in filtered_df.columns and 'has_impurity' in filtered_df.columns:
-                            # Временно сохраняем и показываем отдельно
                             plt.close(fig)
                             threshold_fig = plot_critical_dr_threshold(filtered_df)
                             st.pyplot(threshold_fig)
@@ -2094,7 +2652,6 @@ def main():
                     
                     elif plot_name == "Research Intensity Matrix":
                         if 'B_element' in filtered_df.columns and 'D_element' in filtered_df.columns:
-                            # Временно сохраняем и показываем отдельно
                             plt.close(fig)
                             matrix_fig, pub_matrix = plot_publication_matrix(filtered_df)
                             st.pyplot(matrix_fig)
@@ -2102,7 +2659,6 @@ def main():
                             st.dataframe(pub_matrix, use_container_width=True)
                             plot_idx -= 1
                     
-                    # Применяем настройки
                     if not show_grid:
                         ax.grid(False)
                     if not show_legend:
@@ -2110,7 +2666,6 @@ def main():
                     
                     plot_idx += 1
                 
-                # Убираем пустые подграфики
                 for j in range(plot_idx, len(axes)):
                     fig.delaxes(axes[j])
                 
@@ -2119,7 +2674,6 @@ def main():
                     st.pyplot(fig)
                     plt.close(fig)
             
-            # График 3: Тепловая карта Δr (отдельно, если выбрана)
             if "Δr Heatmap with x(boundary)" in solubility_plots:
                 if 'dr' in filtered_df.columns and 'B_element' in filtered_df.columns and 'D_element' in filtered_df.columns:
                     heatmap_fig = plot_heatmap_dr(filtered_df)
@@ -2136,7 +2690,6 @@ def main():
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    # График 4: x(max) vs x(boundary)
                     if 'x_boundary_value' in filtered_df.columns:
                         fig, ax = plt.subplots(figsize=(8, 6))
                         plot_xmax_vs_xboundary(filtered_df, ax)
@@ -2148,7 +2701,6 @@ def main():
                         plt.close(fig)
                 
                 with col2:
-                    # График 5: x(max) vs tolerance factor
                     if 'tolerance_factor' in filtered_df.columns:
                         fig, ax = plt.subplots(figsize=(8, 6))
                         plot_xmax_vs_tolerance(filtered_df, ax)
@@ -2159,7 +2711,6 @@ def main():
                         st.pyplot(fig)
                         plt.close(fig)
                 
-                # График 6: Относительное положение
                 if 'x_rel_max' in filtered_df.columns and 'dr_rel' in filtered_df.columns:
                     fig, ax = plt.subplots(figsize=(10, 6))
                     plot_relative_position(filtered_df, ax)
@@ -2170,7 +2721,6 @@ def main():
                     st.pyplot(fig)
                     plt.close(fig)
                 
-                # График 16: Пузырьковая диаграмма смещения
                 st.subheader("Shift Analysis")
                 fig = plot_shift_vs_dr_bubble(filtered_df)
                 st.pyplot(fig)
@@ -2238,21 +2788,104 @@ def main():
                 
                 elif plot_name == "Dopant Comparison by B-site":
                     if 'D_element' in filtered_df.columns and 'B_element' in filtered_df.columns:
-                        selected_d = st.selectbox(
+                        selected_dopant = st.selectbox(
                             "Select dopant for comparison",
                             options=sorted(filtered_df['D_element'].unique())
                         )
-                        fig = plot_dopant_comparison_boxplot(filtered_df, selected_d, include_lower_bounds)
+                        fig = plot_dopant_comparison_boxplot(filtered_df, selected_dopant, include_lower_bounds)
                         st.pyplot(fig)
                         plt.close(fig)
         
         # ============================================================================
-        # ВКЛАДКА 5: ML INSIGHTS
+        # ВКЛАДКА 5: VOLUMETRIC & THERMODYNAMIC
         # ============================================================================
         with tab5:
+            st.subheader("Volumetric and Thermodynamic Analysis")
+            
+            vol_plots = st.multiselect(
+                "Select volumetric/thermodynamic plots",
+                options=[
+                    "Free Volume vs Solubility",
+                    "Formation Energy vs Solubility",
+                    "3D Stability Phase Diagram",
+                    "Pairplot: Volumetric Parameters",
+                    "Density Prediction",
+                    "Radar Chart: Material Profiles"
+                ],
+                default=["Free Volume vs Solubility", "Formation Energy vs Solubility"]
+            )
+            
+            for plot_name in vol_plots:
+                if plot_name == "Free Volume vs Solubility":
+                    if 'free_volume_fraction' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        plot_free_volume_vs_xboundary(filtered_df, ax)
+                        if not show_grid:
+                            ax.grid(False)
+                        if not show_legend:
+                            ax.legend().remove()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.warning("Free volume data not available. Check if V_cell and V_cations were calculated.")
+                
+                elif plot_name == "Formation Energy vs Solubility":
+                    if 'E_form' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        plot_formation_energy_vs_xboundary(filtered_df, ax)
+                        if not show_grid:
+                            ax.grid(False)
+                        if not show_legend:
+                            ax.legend().remove()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.warning("Formation energy data not available.")
+                
+                elif plot_name == "3D Stability Phase Diagram":
+                    if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                        fig = plot_3d_stability_phase(filtered_df)
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.warning("Required data for 3D plot not available.")
+                
+                elif plot_name == "Pairplot: Volumetric Parameters":
+                    if 'free_volume_fraction' in filtered_df.columns and 'packing_factor' in filtered_df.columns:
+                        fig = plot_pairplot_volumetric(filtered_df, include_lower_bounds)
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.warning("Volumetric parameters not available.")
+                
+                elif plot_name == "Density Prediction":
+                    fig = plot_density_prediction(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                
+                elif plot_name == "Radar Chart: Material Profiles":
+                    fig = plot_radar_chart(filtered_df)
+                    st.pyplot(fig)
+                    plt.close(fig)
+            
+            st.subheader("Volumetric Statistics")
+            if 'free_volume_fraction' in filtered_df.columns:
+                vol_stats = filtered_df['free_volume_fraction'].dropna()
+                if len(vol_stats) > 0:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Mean Free Volume Fraction", f"{vol_stats.mean():.3f}")
+                    with col2:
+                        st.metric("Median Free Volume Fraction", f"{vol_stats.median():.3f}")
+                    with col3:
+                        st.metric("Std Dev", f"{vol_stats.std():.3f}")
+        
+        # ============================================================================
+        # ВКЛАДКА 6: ML INSIGHTS
+        # ============================================================================
+        with tab6:
             st.subheader("Machine Learning Insights")
             
-            # График 20: Важность признаков
             st.markdown("**Feature Importance Analysis (Random Forest)**")
             fig, importance_df = plot_feature_importance(filtered_df)
             st.pyplot(fig)
@@ -2261,7 +2894,6 @@ def main():
             if importance_df is not None:
                 st.dataframe(importance_df, use_container_width=True)
             
-            # Статистика по публикациям
             st.markdown("---")
             st.subheader("Publication Analysis")
             
@@ -2274,7 +2906,6 @@ def main():
                     st.metric("Year range", f"{int(year_stats.min())} - {int(year_stats.max())}")
                     st.metric("Median year", int(year_stats.median()))
                     
-                    # Гистограмма по годам
                     fig, ax = plt.subplots(figsize=(10, 4))
                     ax.hist(year_stats, bins=20, edgecolor='black', alpha=0.7)
                     ax.set_xlabel('Year')
@@ -2287,7 +2918,6 @@ def main():
     else:
         st.info("👈 Please upload an Excel file to begin analysis")
         
-        # Показываем пример данных с пояснением про "-"
         st.markdown("### Example of expected data format:")
         st.markdown("**Note:** In x(boundary) column, '-' means the solubility is at least x(inv,end)")
         example_data = pd.DataFrame({
@@ -2299,7 +2929,7 @@ def main():
             'x(boundary)': ['-', '0.22', '0.27'],
             'Impurity phase(s)': ['-', 'BaSm2O4', 'Y2O3'],
             'x(max)': ['0.15', '0.15', '0.25'],
-            'doi': ['10.1016/j.jallcom.2009.05.108', 
+            'doi': ['10.1016/j.jallcom.2009.05.108',
                    '10.1016/j.jpowsour.2008.01.036',
                    '10.1016/j.ssi.2007.01.015']
         })
@@ -2308,32 +2938,15 @@ def main():
         
         st.markdown("""
         ### Key improvements in this version:
+        - **New volumetric descriptors**: V_cations, V_cell, V_free, packing factor, free volume fraction
+        - **New thermodynamic descriptors**: Formation energy, band gap, lattice strain energy
+        - **New plots**: Free volume vs solubility, formation energy vs solubility, 3D phase diagram, pairplot, density prediction, radar chart
+        - **Comprehensive correlation matrix** with all 15+ descriptors
         - **"-" in x(boundary)** is now interpreted as **lower bound estimate** (≥ x(inv,end))
         - Visual distinction between exact values and lower bounds (transparent markers)
         - Separate statistics for exact values and lower bounds
-        - Option to include/exclude lower bounds from analysis
-        - Violin plots now show the correct number of samples for Sc and other dopants
+        - **New tab**: Volumetric & Thermodynamic Analysis
         """)
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

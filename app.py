@@ -2608,43 +2608,50 @@ def main():
         st.markdown("---")
         st.header("🔍 Filters")
         
-        try:
-            df = pd.read_excel(uploaded_file, engine='openpyxl')
-            
-            with st.spinner("Processing data..."):
-                df_processed = process_data(df, treat_lower_as_exact)
-                
-                if 'B_element' in df_processed.columns:
-                    selected_b = st.multiselect(
-                        "B-site elements",
-                        options=sorted(df_processed['B_element'].unique()),
-                        default=sorted(df_processed['B_element'].unique())
-                    )
-                else:
-                    selected_b = []
-                    st.error("B_element column not found")
-                
-                if 'D_element' in df_processed.columns:
-                    selected_d = st.multiselect(
-                        "Dopant elements",
-                        options=sorted(df_processed['D_element'].unique()),
-                        default=sorted(df_processed['D_element'].unique())
-                    )
-                else:
-                    selected_d = []
-                    st.error("D_element column not found")
-                
-                impurity_filter = st.radio(
-                    "Impurity phases",
-                    options=['All', 'With impurities', 'Without impurities']
-                )
-                
-                x_boundary_type_filter = st.multiselect(
-                    "x(boundary) type",
-                    options=['exact', 'lower_bound'],
-                    default=['exact', 'lower_bound'] if include_lower_bounds else ['exact'],
-                    help="Select which types of x(boundary) to include"
-                )
+        # Фильтр по B-элементу
+        if 'B_element' in df_processed.columns:
+            selected_b = st.multiselect(
+                "B-site elements",
+                options=sorted(df_processed['B_element'].unique()),
+                default=sorted(df_processed['B_element'].unique()),
+                key="filter_b_site"  # Уникальный ключ
+            )
+        else:
+            selected_b = []
+            st.error("B_element column not found")
+        
+        # Фильтр по D-элементу
+        if 'D_element' in df_processed.columns:
+            selected_d = st.multiselect(
+                "Dopant elements",
+                options=sorted(df_processed['D_element'].unique()),
+                default=sorted(df_processed['D_element'].unique()),
+                key="filter_dopant"  # Уникальный ключ
+            )
+        else:
+            selected_d = []
+            st.error("D_element column not found")
+        
+        # Фильтр по наличию примесей
+        impurity_filter = st.radio(
+            "Impurity phases",
+            options=['All', 'With impurities', 'Without impurities'],
+            key="filter_impurity"  # Уникальный ключ
+        )
+        
+        # Фильтр по типу x_boundary (только если не treat_lower_as_exact)
+        if treat_lower_as_exact:
+            # Если treat_lower_as_exact=True, показываем только exact значения
+            x_boundary_type_filter = ['exact']
+            # Не создаем multiselect, чтобы избежать конфликта
+        else:
+            x_boundary_type_filter = st.multiselect(
+                "x(boundary) type",
+                options=['exact', 'lower_bound'],
+                default=['exact', 'lower_bound'] if include_lower_bounds else ['exact'],
+                help="Select which types of x(boundary) to include",
+                key="filter_x_boundary_type"  # Уникальный ключ
+            )
                 
                 filtered_df = df_processed.copy()
                 

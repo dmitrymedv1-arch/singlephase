@@ -403,22 +403,17 @@ def calculate_t_gradient(r_B, r_D, x, r_A, r_O, x_points=100):
         return dt / dx if dx > 0 else None
     return None
 
-def process_x_boundary(value, inv_end=None, treat_lower_as_exact=False):
+def process_x_boundary(value, inv_end=None):
     """
     Специальная обработка для x(boundary)
     Возвращает (числовое_значение, тип_значения, исходная_строка)
     тип_значения: 'exact' - точное значение, 'lower_bound' - нижняя оценка, 'none' - нет данных
-    
-    Если treat_lower_as_exact=True, то все '-' преобразуются в 'exact' с значением inv_end
     """
     if pd.isna(value) or value == '' or value == '-':
         if inv_end is not None and not pd.isna(inv_end) and inv_end != '':
             try:
                 numeric_value = float(inv_end)
-                if treat_lower_as_exact:
-                    return numeric_value, 'exact', str(value)
-                else:
-                    return numeric_value, 'lower_bound', str(value)
+                return numeric_value, 'lower_bound', str(value)
             except (ValueError, TypeError):
                 return None, 'none', str(value)
         return None, 'none', str(value)
@@ -559,7 +554,7 @@ def calculate_descriptors(row):
 # ============================================================================
 # ФУНКЦИЯ ПРОЦЕССИНГА ДАННЫХ (РАСШИРЕННАЯ)
 # ============================================================================
-def process_data(df, treat_lower_as_exact=False):
+def process_data(df):
     """Основная функция обработки данных (расширенная версия)"""
     df_processed = df.copy()
     
@@ -643,7 +638,7 @@ def process_data(df, treat_lower_as_exact=False):
             df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
             df_processed[col.replace('_raw', '')] = df_processed[col]
     
-    # СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ x_boundary с учетом treat_lower_as_exact
+    # СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ x_boundary
     if 'x_boundary' in df_processed.columns:
         # Создаем колонки для хранения обработанных значений
         x_boundary_values = []
@@ -654,9 +649,7 @@ def process_data(df, treat_lower_as_exact=False):
             x_boundary_raw_val = row['x_boundary']
             x_inv_end_val = row.get('x_inv_end', None)
             
-            numeric_val, val_type, raw_str = process_x_boundary(
-                x_boundary_raw_val, x_inv_end_val, treat_lower_as_exact
-            )
+            numeric_val, val_type, raw_str = process_x_boundary(x_boundary_raw_val, x_inv_end_val)
             
             x_boundary_values.append(numeric_val)
             x_boundary_types.append(val_type)
@@ -796,80 +789,37 @@ def feature_importance_analysis(df):
     
     return importance_df, r2
 
-def get_dopant_statistics(df, include_lower_bounds=True, treat_lower_as_exact=False):
-    """Получение статистики по допантам с учетом типа значений
-    
-    Параметры:
-    - include_lower_bounds: включать ли lower_bound значения
-    - treat_lower_as_exact: если True, lower_bound значения учитываются как точные
-    """
+def get_dopant_statistics(df, include_lower_bounds=True):
+    """Получение статистики по допантам с учетом типа значений"""
     if 'x_boundary_value' not in df.columns or 'D_element' not in df.columns:
         return pd.DataFrame()
     
-    # Подготовка данных
-    stats_data = []
+    if include_lower_bounds:
+        df_stats = df.dropna(subset=['x_boundary_value'])
+    else:
+        df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
     
-    for _, row in df.iterrows():
-        if pd.isna(row.get('x_boundary_value')):
-            continue
-        
-        dopant = row['D_element']
-        x_val = row['x_boundary_value']
-        x_type = row['x_boundary_type']
-        
-        if x_type == 'exact':
-            stats_data.append({
-                'Dopant': dopant,
-                'x_boundary_value': x_val,
-                'type': 'exact'
-            })
-        elif x_type == 'lower_bound' and include_lower_bounds:
-            if treat_lower_as_exact:
-                stats_data.append({
-                    'Dopant': dopant,
-                    'x_boundary_value': x_val,
-                    'type': 'exact_estimated'
-                })
-            else:
-                stats_data.append({
-                    'Dopant': dopant,
-                    'x_boundary_value': x_val,
-                    'type': 'lower_bound'
-                })
-    
-    if len(stats_data) == 0:
+    if len(df_stats) == 0:
         return pd.DataFrame()
     
-    stats_df = pd.DataFrame(stats_data)
-    
-    # Группировка по допантам
     stats_list = []
-    for dopant in stats_df['Dopant'].unique():
-        dopant_data = stats_df[stats_df['Dopant'] == dopant]
+    for dopant in df_stats['D_element'].unique():
+        dopant_data = df_stats[df_stats['D_element'] == dopant]['x_boundary_value']
         
-        exact_data = dopant_data[dopant_data['type'] == 'exact']['x_boundary_value']
-        exact_est_data = dopant_data[dopant_data['type'] == 'exact_estimated']['x_boundary_value']
-        lower_data = dopant_data[dopant_data['type'] == 'lower_bound']['x_boundary_value']
+        types_in_dopant = df[df['D_element'] == dopant]['x_boundary_type'].value_counts()
         
-        all_values = pd.concat([exact_data, exact_est_data, lower_data])
-        
-        if len(all_values) > 0:
-            stats_list.append({
-                'Dopant': dopant,
-                'Count': len(all_values),
-                'Mean': all_values.mean(),
-                'Median': all_values.median(),
-                'Std': all_values.std(),
-                'Min': all_values.min(),
-                'Max': all_values.max(),
-                'Exact values': len(exact_data) + len(exact_est_data),
-                'Lower bounds': len(lower_data),
-                'Includes lower bounds': include_lower_bounds,
-                'Treat as exact': treat_lower_as_exact
-            })
-    
-    if len(stats_list) == 0:
-        return pd.DataFrame()
+        stats_list.append({
+            'Dopant': dopant,
+            'Count': len(dopant_data),
+            'Mean': dopant_data.mean(),
+            'Median': dopant_data.median(),
+            'Std': dopant_data.std(),
+            'Min': dopant_data.min(),
+            'Max': dopant_data.max(),
+            'Exact values': types_in_dopant.get('exact', 0),
+            'Lower bounds': types_in_dopant.get('lower_bound', 0),
+            'Includes lower bounds': include_lower_bounds
+        })
     
     return pd.DataFrame(stats_list).sort_values('Median', ascending=False)
 
@@ -1292,143 +1242,43 @@ def plot_temporal_trend(df, ax):
     ax.grid(True, alpha=0.3, linestyle='--')
     return ax
 
-def plot_b_site_statistics(df, include_lower_bounds=True, treat_lower_as_exact=False):
-    """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)
+def plot_b_site_statistics(df, include_lower_bounds=True):
+    """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)"""
+    if include_lower_bounds:
+        df_stats = df.dropna(subset=['x_boundary_value'])
+    else:
+        df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
     
-    Параметры:
-    - include_lower_bounds: включать ли lower_bound значения в анализ
-    - treat_lower_as_exact: если True, lower_bound значения учитываются как точные
-    """
-    # Подготовка данных для статистики
-    stats_data = []
+    stats_df = df_stats.groupby('B_element')['x_boundary_value'].agg(['mean', 'median', 'count', 'std']).round(3)
     
-    for _, row in df.iterrows():
-        if pd.isna(row.get('x_boundary_value')):
-            continue
-        
-        b_element = row['B_element']
-        x_val = row['x_boundary_value']
-        x_type = row['x_boundary_type']
-        
-        if x_type == 'exact':
-            stats_data.append({
-                'B_element': b_element,
-                'x_boundary_value': x_val,
-                'type': 'exact'
-            })
-        elif x_type == 'lower_bound' and include_lower_bounds:
-            if treat_lower_as_exact:
-                # Обрабатываем как точное значение
-                stats_data.append({
-                    'B_element': b_element,
-                    'x_boundary_value': x_val,
-                    'type': 'exact_estimated'
-                })
-            else:
-                # Оставляем как lower_bound
-                stats_data.append({
-                    'B_element': b_element,
-                    'x_boundary_value': x_val,
-                    'type': 'lower_bound'
-                })
-    
-    if len(stats_data) == 0:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        ax1.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax1.transAxes)
-        ax2.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax2.transAxes)
-        return fig, pd.DataFrame()
-    
-    stats_df = pd.DataFrame(stats_data)
-    
-    # Расчет статистики по B-элементам
-    b_stats_list = []
-    for b_element in stats_df['B_element'].unique():
-        b_data = stats_df[stats_df['B_element'] == b_element]
-        
-        # Разделяем по типам для отображения
-        exact_data = b_data[b_data['type'] == 'exact']['x_boundary_value']
-        lower_data = b_data[b_data['type'] == 'lower_bound']['x_boundary_value']
-        exact_est_data = b_data[b_data['type'] == 'exact_estimated']['x_boundary_value']
-        
-        # Объединяем все значения для статистики
-        all_values = pd.concat([exact_data, exact_est_data, lower_data])
-        
-        if len(all_values) > 0:
-            b_stats_list.append({
-                'B_element': b_element,
-                'mean': all_values.mean(),
-                'median': all_values.median(),
-                'std': all_values.std(),
-                'count': len(all_values),
-                'count_exact': len(exact_data) + len(exact_est_data),
-                'count_lower': len(lower_data),
-                'min': all_values.min(),
-                'max': all_values.max()
-            })
-    
-    if len(b_stats_list) == 0:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        ax1.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax1.transAxes)
-        ax2.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax2.transAxes)
-        return fig, pd.DataFrame()
-    
-    b_stats = pd.DataFrame(b_stats_list).sort_values('mean', ascending=False)
+    type_counts = df.groupby('B_element')['x_boundary_type'].value_counts().unstack(fill_value=0)
+    if 'exact' in type_counts.columns:
+        stats_df['exact_count'] = type_counts['exact']
+    if 'lower_bound' in type_counts.columns:
+        stats_df['lower_bound_count'] = type_counts['lower_bound']
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     
-    b_sites = b_stats['B_element'].tolist()
+    b_sites = stats_df.index
     x_pos = np.arange(len(b_sites))
     
-    # Столбчатая диаграмма с ошибками (используем min и max для lower_bound)
-    means = b_stats['mean'].values
-    stds = b_stats['std'].values
-    
-    # Для B-элементов с lower_bound значениями показываем стрелку вверх
-    bars = ax1.bar(x_pos, means, yerr=stds,
-                   capsize=5, 
-                   color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
-                   edgecolor='black', linewidth=0.5, alpha=0.8,
-                   error_kw={'linewidth': 1.5, 'ecolor': 'black'})
-    
-    # Добавляем маркеры для lower_bound значений
-    for i, b in enumerate(b_sites):
-        b_info = b_stats[b_stats['B_element'] == b].iloc[0]
-        if b_info['count_lower'] > 0 and not treat_lower_as_exact:
-            # Добавляем стрелку вверх, показывающую что истинное значение может быть выше
-            max_val = b_info['max']
-            if max_val > means[i] + stds[i]:
-                ax1.annotate('↑', xy=(x_pos[i], max_val), 
-                            xytext=(x_pos[i], max_val + 0.02),
-                            ha='center', fontsize=14, color='red',
-                            arrowprops=dict(arrowstyle='->', color='red', alpha=0.7))
-    
+    ax1.bar(x_pos, stats_df['mean'], yerr=stats_df['std'],
+            capsize=5, color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
+            edgecolor='black', linewidth=0.5, alpha=0.8)
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(b_sites)
-    ax1.set_ylabel('x(boundary)')
-    title = f'Average Solubility by B-site\n(n={len(stats_df)} samples'
-    if treat_lower_as_exact:
-        title += ', lower bounds treated as exact)'
-    elif include_lower_bounds:
-        title += ', including lower bounds)'
-    else:
-        title += ', exact only)'
-    ax1.set_title(title)
+    ax1.set_ylabel('Mean x(boundary)')
+    ax1.set_title(f'Average Solubility by B-site\n({len(df_stats)} samples)')
     ax1.grid(True, alpha=0.3, axis='y')
-    ax1.set_ylim(bottom=0)
     
-    # Вторая диаграмма - количество образцов
     bottom = np.zeros(len(b_sites))
-    
-    count_exact = b_stats['count_exact'].values
-    count_lower = b_stats['count_lower'].values
-    
-    ax2.bar(x_pos, count_exact, bottom=bottom,
-            label='Exact', color='darkblue', edgecolor='black', linewidth=0.5)
-    bottom += count_exact
-    
-    if include_lower_bounds and not treat_lower_as_exact:
-        ax2.bar(x_pos, count_lower, bottom=bottom,
-                label='Lower bound (≥)', color='lightblue', edgecolor='black', linewidth=0.5, alpha=0.7)
+    if 'exact_count' in stats_df.columns:
+        ax2.bar(x_pos, stats_df['exact_count'], bottom=bottom,
+                label='Exact', color='darkblue', edgecolor='black', linewidth=0.5)
+        bottom += stats_df['exact_count']
+    if 'lower_bound_count' in stats_df.columns:
+        ax2.bar(x_pos, stats_df['lower_bound_count'], bottom=bottom,
+                label='Lower bound', color='lightblue', edgecolor='black', linewidth=0.5, alpha=0.7)
     
     ax2.set_xticks(x_pos)
     ax2.set_xticklabels(b_sites)
@@ -1438,25 +1288,19 @@ def plot_b_site_statistics(df, include_lower_bounds=True, treat_lower_as_exact=F
     ax2.grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
-    return fig, b_stats
+    return fig, stats_df
 
-def plot_top_dopants_violin(df, include_lower_bounds=True, treat_lower_as_exact=False):
-    """График 11: Violin plot для топ-10 допантов по растворимости, отсортированных по ионному радиусу
-    
-    Параметры:
-    - include_lower_bounds: включать ли lower_bound значения
-    - treat_lower_as_exact: если True, lower_bound значения учитываются как точные
-    """
-    dopant_stats = get_dopant_statistics(df, include_lower_bounds, treat_lower_as_exact)
+def plot_top_dopants_violin(df, include_lower_bounds=True):
+    """График 11: Violin plot для топ-10 допантов по растворимости, отсортированных по ионному радиусу"""
+    dopant_stats = get_dopant_statistics(df, include_lower_bounds)
     
     if len(dopant_stats) == 0:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center', transform=ax.transAxes)
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
         return fig
     
     top_dopants = dopant_stats.head(10)['Dopant'].tolist()
     
-    # Получаем ионные радиусы для допантов
     dopant_radii = {}
     for dopant in top_dopants:
         radius = IONIC_RADII.get((dopant, 3, 6), None)
@@ -1467,64 +1311,92 @@ def plot_top_dopants_violin(df, include_lower_bounds=True, treat_lower_as_exact=
                     break
         dopant_radii[dopant] = radius if radius else 0
     
-    # Сортируем по ионному радиусу
     sorted_dopants = sorted(top_dopants, key=lambda d: dopant_radii.get(d, 0))
     
-    # Собираем данные для violin plot
-    plot_data = []
-    exact_points = []
-    lower_points = []
-    exact_est_points = []
+    expanded_data = []
     
-    for d in sorted_dopants:
-        d_data = []
-        
-        # Точные значения
-        exact_vals = df[(df['D_element'] == d) & 
-                        (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
-        for val in exact_vals:
-            plot_data.append({'Dopant': d, 'x_value': val, 'type': 'exact'})
-            exact_points.append({'Dopant': d, 'x_value': val})
-        
-        # Lower bounds
-        if include_lower_bounds:
-            lower_vals = df[(df['D_element'] == d) & 
-                            (df['x_boundary_type'] == 'lower_bound')]['x_boundary_value'].dropna()
-            if treat_lower_as_exact:
-                for val in lower_vals:
-                    plot_data.append({'Dopant': d, 'x_value': val, 'type': 'exact_estimated'})
-                    exact_est_points.append({'Dopant': d, 'x_value': val})
+    for _, row in df.iterrows():
+        if row['D_element'] not in sorted_dopants:
+            continue
+            
+        if pd.isna(row.get('x_boundary_value')):
+            continue
+            
+        if row['x_boundary_type'] == 'exact':
+            x_inv_in = row.get('x_inv_in', 0)
+            if pd.isna(x_inv_in):
+                x_inv_in = 0
+            
+            x_boundary = row['x_boundary_value']
+            range_width = x_boundary - x_inv_in
+            n_points = max(3, min(10, int(range_width * 20)))
+            
+            for x in np.linspace(x_inv_in, x_boundary, n_points):
+                expanded_data.append({
+                    'D_element': row['D_element'],
+                    'x_value': x,
+                    'type': 'exact',
+                    'original_max': x_boundary
+                })
+        elif row['x_boundary_type'] == 'lower_bound' and include_lower_bounds:
+            x_inv_in = row.get('x_inv_in', 0)
+            x_inv_end = row.get('x_inv_end', row['x_boundary_value'])
+            
+            if pd.isna(x_inv_in) or x_inv_in == '-':
+                x_inv_in = 0
+            if pd.isna(x_inv_end) or x_inv_end == '-':
+                x_inv_end = row['x_boundary_value']
+            
+            try:
+                x_inv_in = float(x_inv_in)
+                x_inv_end = float(x_inv_end)
+            except (ValueError, TypeError):
+                x_inv_in = 0
+                x_inv_end = row['x_boundary_value']
+            
+            range_width = x_inv_end - x_inv_in
+            
+            if range_width < 0.05:
+                n_points = 2
+            elif range_width < 0.1:
+                n_points = 3
+            elif range_width < 0.2:
+                n_points = 5
             else:
-                for val in lower_vals:
-                    plot_data.append({'Dopant': d, 'x_value': val, 'type': 'lower_bound'})
-                    lower_points.append({'Dopant': d, 'x_value': val})
+                n_points = min(10, int(range_width * 15))
+            
+            for x in np.linspace(x_inv_in, x_inv_end, n_points):
+                expanded_data.append({
+                    'D_element': row['D_element'],
+                    'x_value': x,
+                    'type': 'lower_bound',
+                    'weight': 1.0 / n_points
+                })
     
-    if len(plot_data) == 0:
+    expanded_df = pd.DataFrame(expanded_data)
+    
+    if len(expanded_df) == 0:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, 'No data after processing', ha='center', va='center', transform=ax.transAxes)
+        ax.text(0.5, 0.5, 'No data after expansion', ha='center', va='center')
         return fig
-    
-    plot_df = pd.DataFrame(plot_data)
     
     fig, ax = plt.subplots(figsize=(14, 8))
     
-    # Подготовка данных для violin plot
-    violin_data = []
+    plot_data = []
     positions = []
     violin_labels = []
     radius_values = []
     
     for i, d in enumerate(sorted_dopants):
-        d_data = plot_df[plot_df['Dopant'] == d]['x_value'].dropna()
+        d_data = expanded_df[expanded_df['D_element'] == d]['x_value'].dropna()
         if len(d_data) > 0:
-            violin_data.append(d_data)
+            plot_data.append(d_data)
             positions.append(i + 1)
             violin_labels.append(f"{d}")
             radius_values.append(dopant_radii.get(d, 0))
     
-    if violin_data:
-        parts = ax.violinplot(violin_data, positions=positions, showmeans=False, 
-                              showmedians=True, widths=0.7)
+    if plot_data:
+        parts = ax.violinplot(plot_data, positions=positions, showmeans=False, showmedians=True, widths=0.7)
         
         cmap = plt.cm.viridis
         norm = plt.Normalize(min(radius_values), max(radius_values))
@@ -1539,35 +1411,25 @@ def plot_top_dopants_violin(df, include_lower_bounds=True, treat_lower_as_exact=
             parts['cmedians'].set_color('red')
             parts['cmedians'].set_linewidth(2)
         
-        # Добавляем точки
         for i, d in enumerate(sorted_dopants):
-            # Точные значения
-            exact_vals = [p['x_value'] for p in exact_points if p['Dopant'] == d]
-            if len(exact_vals) > 0:
-                x_pos = np.random.normal(positions[i], 0.05, len(exact_vals))
-                ax.scatter(x_pos, exact_vals, color='darkred', s=80,
+            exact_data = df[(df['D_element'] == d) &
+                           (df['x_boundary_type'] == 'exact')]['x_boundary_value'].dropna()
+            if len(exact_data) > 0:
+                x_pos = np.random.normal(positions[i], 0.05, len(exact_data))
+                ax.scatter(x_pos, exact_data, color='darkred', s=80,
                           alpha=0.9, zorder=3, edgecolors='black', linewidth=1,
                           label='Exact values' if i == 0 else "")
             
-            # Точные из lower bounds (если treat_as_exact)
-            exact_est_vals = [p['x_value'] for p in exact_est_points if p['Dopant'] == d]
-            if len(exact_est_vals) > 0 and treat_lower_as_exact:
-                x_pos = np.random.normal(positions[i], 0.05, len(exact_est_vals))
-                ax.scatter(x_pos, exact_est_vals, color='orange', s=80,
-                          alpha=0.8, zorder=3, edgecolors='black', linewidth=1,
-                          label='Lower bounds (treated as exact)' if i == 0 else "")
-            
-            # Нижние оценки
-            lower_vals = [p['x_value'] for p in lower_points if p['Dopant'] == d]
-            if len(lower_vals) > 0 and not treat_lower_as_exact:
-                x_pos = np.random.normal(positions[i], 0.08, len(lower_vals))
-                ax.scatter(x_pos, lower_vals, color='darkorange', s=80,
+            lower_data = df[(df['D_element'] == d) &
+                           (df['x_boundary_type'] == 'lower_bound')]['x_boundary_value'].dropna()
+            if len(lower_data) > 0:
+                x_pos = np.random.normal(positions[i], 0.08, len(lower_data))
+                ax.scatter(x_pos, lower_data, color='darkorange', s=80,
                           alpha=0.7, zorder=3, marker='D', edgecolors='black', linewidth=1,
                           label='Lower bounds (≥)' if i == 0 else "")
         
         y_top = ax.get_ylim()[1]
         
-        # Добавляем информацию о количестве образцов
         for i, d in enumerate(sorted_dopants):
             stats_row = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
             exact_count = int(stats_row['Exact values'])
@@ -1575,25 +1437,40 @@ def plot_top_dopants_violin(df, include_lower_bounds=True, treat_lower_as_exact=
             
             text = f'n={exact_count}'
             if lower_count > 0:
-                if treat_lower_as_exact:
-                    text += f' (inc. {lower_count}≥)'
-                else:
-                    text += f' (+{lower_count}≥)'
+                text += f' (+{lower_count}≥)'
             
             ax.text(positions[i], y_top * 0.98, text,
                     ha='center', fontsize=9, va='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black'))
         
+        for i, d in enumerate(sorted_dopants):
+            all_values = df[df['D_element'] == d]['x_boundary_value'].dropna()
+            if len(all_values) > 0:
+                min_val = all_values.min()
+                max_val = all_values.max()
+                
+                stats_row = dopant_stats[dopant_stats['Dopant'] == d].iloc[0]
+                lower_count = int(stats_row['Lower bounds'])
+                
+                if lower_count == 0:
+                    range_text = f'[{min_val:.2f}-{max_val:.2f}]'
+                else:
+                    range_text = f'{min_val:.2f} to ≥{max_val:.2f}'
+                
+                if i % 2 == 0:
+                    y_pos = y_top * 0.92
+                else:
+                    y_pos = y_top * 0.89
+                
+                ax.text(positions[i], y_pos, range_text,
+                        ha='center', fontsize=8, va='top',
+                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7, edgecolor='gray'))
+        
         ax.set_xlabel('Dopant Element', fontsize=14, fontweight='bold')
         ax.set_ylabel('Solid solution range', fontsize=14, fontweight='bold')
         
         title = f'Top 10 Dopants by Solubility - Sorted by Ionic Radius\n'
-        if treat_lower_as_exact:
-            title += '(Lower bounds treated as exact values)'
-        elif include_lower_bounds:
-            title += '(Including lower bounds as estimates)'
-        else:
-            title += '(Exact values only)'
+        title += f'({"Including" if include_lower_bounds else "Excluding"} lower bounds)'
         ax.set_title(title, fontsize=14, fontweight='bold')
         
         ax.set_xticks(positions)
@@ -2593,85 +2470,71 @@ def main():
         st.markdown("---")
         st.header("🔢 Data Processing")
         include_lower_bounds = st.checkbox(
-            "Include lower bound estimates (≥)", 
+            "Include lower bound estimates (≥)",
             value=True,
             help="When enabled, '-' in x(boundary) is treated as ≥ x(inv,end)"
-        )
-        
-        treat_lower_as_exact = st.checkbox(
-            "Treat lower bounds as exact values (use x(inv,end) as solubility limit)",
-            value=False,
-            help="When enabled, all '-' in x(boundary) are treated as exact values equal to x(inv,end). "
-                 "This is useful for statistical analysis where you want to include the full range."
         )
         
         st.markdown("---")
         st.header("🔍 Filters")
         
-        # Фильтр по B-элементу
-        if 'B_element' in df_processed.columns:
-            selected_b = st.multiselect(
-                "B-site elements",
-                options=sorted(df_processed['B_element'].unique()),
-                default=sorted(df_processed['B_element'].unique()),
-                key="filter_b_site"  # Уникальный ключ
-            )
-        else:
-            selected_b = []
-            st.error("B_element column not found")
-        
-        # Фильтр по D-элементу
-        if 'D_element' in df_processed.columns:
-            selected_d = st.multiselect(
-                "Dopant elements",
-                options=sorted(df_processed['D_element'].unique()),
-                default=sorted(df_processed['D_element'].unique()),
-                key="filter_dopant"  # Уникальный ключ
-            )
-        else:
-            selected_d = []
-            st.error("D_element column not found")
-        
-        # Фильтр по наличию примесей
-        impurity_filter = st.radio(
-            "Impurity phases",
-            options=['All', 'With impurities', 'Without impurities'],
-            key="filter_impurity"  # Уникальный ключ
-        )
-        
-
-        # Фильтр по типу x_boundary (только если не treat_lower_as_exact)
-        if treat_lower_as_exact:
-                    
-            x_boundary_type_filter = ['exact']
-        else:
-            x_boundary_type_filter = st.multiselect(
-                "x(boundary) type",
-                options=['exact', 'lower_bound'],
-                default=['exact', 'lower_bound'] if include_lower_bounds else ['exact'],
-                help="Select which types of x(boundary) to include",
-                key="filter_x_boundary_type"
-            )
+        try:
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+            
+            with st.spinner("Processing data..."):
+                df_processed = process_data(df)
                 
-        filtered_df = df_processed.copy()
+                if 'B_element' in df_processed.columns:
+                    selected_b = st.multiselect(
+                        "B-site elements",
+                        options=sorted(df_processed['B_element'].unique()),
+                        default=sorted(df_processed['B_element'].unique())
+                    )
+                else:
+                    selected_b = []
+                    st.error("B_element column not found")
                 
-            if selected_b and 'B_element' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['B_element'].isin(selected_b)]
+                if 'D_element' in df_processed.columns:
+                    selected_d = st.multiselect(
+                        "Dopant elements",
+                        options=sorted(df_processed['D_element'].unique()),
+                        default=sorted(df_processed['D_element'].unique())
+                    )
+                else:
+                    selected_d = []
+                    st.error("D_element column not found")
                 
-            if selected_d and 'D_element' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['D_element'].isin(selected_d)]
+                impurity_filter = st.radio(
+                    "Impurity phases",
+                    options=['All', 'With impurities', 'Without impurities']
+                )
                 
-            if impurity_filter == 'With impurities' and 'has_impurity' in filtered_df.columns:
-                 filtered_df = filtered_df[filtered_df['has_impurity'] == True]
-            elif impurity_filter == 'Without impurities' and 'has_impurity' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['has_impurity'] == False]
+                x_boundary_type_filter = st.multiselect(
+                    "x(boundary) type",
+                    options=['exact', 'lower_bound'],
+                    default=['exact', 'lower_bound'] if include_lower_bounds else ['exact'],
+                    help="Select which types of x(boundary) to include"
+                )
                 
-            if 'x_boundary_type' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['x_boundary_type'].isin(x_boundary_type_filter)]
+                filtered_df = df_processed.copy()
                 
-    except Exception as e:
-        st.error(f"Error loading file: {str(e)}")
-        return
+                if selected_b and 'B_element' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['B_element'].isin(selected_b)]
+                
+                if selected_d and 'D_element' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['D_element'].isin(selected_d)]
+                
+                if impurity_filter == 'With impurities' and 'has_impurity' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['has_impurity'] == True]
+                elif impurity_filter == 'Without impurities' and 'has_impurity' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['has_impurity'] == False]
+                
+                if 'x_boundary_type' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['x_boundary_type'].isin(x_boundary_type_filter)]
+                
+        except Exception as e:
+            st.error(f"Error loading file: {str(e)}")
+            return
     
     if uploaded_file is not None and len(filtered_df) > 0:
         st.subheader("📈 Data Overview")
@@ -2762,19 +2625,9 @@ def main():
             st.subheader("Basic Statistical Analysis")
             
             if len(filtered_df) > 0:
-                fig, stats_df = plot_b_site_statistics(filtered_df, include_lower_bounds, treat_lower_as_exact)
+                fig, stats_df = plot_b_site_statistics(filtered_df, include_lower_bounds)
                 st.pyplot(fig)
                 plt.close(fig)
-            
-            elif plot_name == "Top Dopants Violin Plot":
-                if 'x_boundary_value' in filtered_df.columns and 'D_element' in filtered_df.columns:
-                    plt.close(fig)
-                    violin_fig = plot_top_dopants_violin(filtered_df, include_lower_bounds, treat_lower_as_exact)
-                    st.pyplot(violin_fig)
-                    plt.close(violin_fig)
-                    plot_idx -= 1
-            
-            dopant_stats = get_dopant_statistics(filtered_df, include_lower_bounds, treat_lower_as_exact)
             
             col1, col2 = st.columns(2)
             

@@ -2653,7 +2653,7 @@ def main():
                 key="filter_x_boundary_type"  # Уникальный ключ
             )
                 
-                filtered_df = df_processed.copy()
+            filtered_df = df_processed.copy()
                 
                 if selected_b and 'B_element' in filtered_df.columns:
                     filtered_df = filtered_df[filtered_df['B_element'].isin(selected_b)]

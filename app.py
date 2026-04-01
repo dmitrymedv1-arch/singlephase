@@ -2639,50 +2639,39 @@ def main():
             key="filter_impurity"  # Уникальный ключ
         )
         
+
         # Фильтр по типу x_boundary (только если не treat_lower_as_exact)
         if treat_lower_as_exact:
-            # Если treat_lower_as_exact=True, показываем только exact значения
+                    
             x_boundary_type_filter = ['exact']
-            # Не создаем multiselect, чтобы избежать конфликта
         else:
             x_boundary_type_filter = st.multiselect(
                 "x(boundary) type",
                 options=['exact', 'lower_bound'],
                 default=['exact', 'lower_bound'] if include_lower_bounds else ['exact'],
                 help="Select which types of x(boundary) to include",
-                key="filter_x_boundary_type"  # Уникальный ключ
+                key="filter_x_boundary_type"
             )
                 
-            filtered_df = df_processed.copy()
+        filtered_df = df_processed.copy()
                 
-                if selected_b and 'B_element' in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df['B_element'].isin(selected_b)]
+            if selected_b and 'B_element' in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df['B_element'].isin(selected_b)]
                 
-                if selected_d and 'D_element' in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df['D_element'].isin(selected_d)]
+            if selected_d and 'D_element' in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df['D_element'].isin(selected_d)]
                 
-                if impurity_filter == 'With impurities' and 'has_impurity' in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df['has_impurity'] == True]
-                elif impurity_filter == 'Without impurities' and 'has_impurity' in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df['has_impurity'] == False]
+            if impurity_filter == 'With impurities' and 'has_impurity' in filtered_df.columns:
+                 filtered_df = filtered_df[filtered_df['has_impurity'] == True]
+            elif impurity_filter == 'Without impurities' and 'has_impurity' in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df['has_impurity'] == False]
                 
-                if 'x_boundary_type' in filtered_df.columns:
-                    if treat_lower_as_exact:
-                        # Если treat_lower_as_exact=True, то все lower_bound становятся exact
-                        x_boundary_type_filter = ['exact']
-                        filtered_df = filtered_df[filtered_df['x_boundary_type'].isin(x_boundary_type_filter)]
-                    else:
-                        x_boundary_type_filter = st.multiselect(
-                            "x(boundary) type",
-                            options=['exact', 'lower_bound'],
-                            default=['exact', 'lower_bound'] if include_lower_bounds else ['exact'],
-                            help="Select which types of x(boundary) to include"
-                        )
-                        filtered_df = filtered_df[filtered_df['x_boundary_type'].isin(x_boundary_type_filter)]
+            if 'x_boundary_type' in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df['x_boundary_type'].isin(x_boundary_type_filter)]
                 
-        except Exception as e:
-            st.error(f"Error loading file: {str(e)}")
-            return
+    except Exception as e:
+        st.error(f"Error loading file: {str(e)}")
+        return
     
     if uploaded_file is not None and len(filtered_df) > 0:
         st.subheader("📈 Data Overview")

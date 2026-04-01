@@ -2358,8 +2358,428 @@ def main():
         layout="wide"
     )
     
+    # ============================================================================
+    # HTML/CSS ДЛЯ ИНТЕРАКТИВНОЙ ПОДСКАЗКИ С ПОЯСНЕНИЯМИ
+    # ============================================================================
+    st.markdown("""
+    <style>
+    /* Стиль для иконки подсказки */
+    .tooltip-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        background-color: #2c3e50;
+        color: white;
+        border-radius: 50%;
+        font-size: 14px;
+        font-weight: bold;
+        cursor: help;
+        margin-left: 8px;
+        transition: all 0.3s ease;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    
+    .tooltip-icon:hover {
+        background-color: #e74c3c;
+        transform: scale(1.1);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    
+    /* Стиль для контейнера подсказки */
+    .tooltip-container {
+        position: relative;
+        display: inline-block;
+    }
+    
+    /* Основное меню подсказки */
+    .tooltip-menu {
+        position: fixed;
+        left: 20px;
+        top: 100px;
+        width: 320px;
+        background: linear-gradient(135deg, #1a2a3a 0%, #0f1a24 100%);
+        border-radius: 12px;
+        padding: 0;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        z-index: 1000;
+        border: 1px solid rgba(255,255,255,0.2);
+        backdrop-filter: blur(10px);
+        transition: all 0.3s ease;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    .tooltip-menu-header {
+        background: rgba(231, 76, 60, 0.9);
+        padding: 12px 16px;
+        border-radius: 12px 12px 0 0;
+        color: white;
+        font-weight: bold;
+        font-size: 14px;
+        text-align: center;
+        cursor: pointer;
+        border-bottom: 1px solid rgba(255,255,255,0.2);
+    }
+    
+    .tooltip-menu-header:hover {
+        background: rgba(231, 76, 60, 1);
+    }
+    
+    .tooltip-menu-content {
+        max-height: 500px;
+        overflow-y: auto;
+        padding: 12px;
+        scrollbar-width: thin;
+    }
+    
+    .tooltip-menu-content::-webkit-scrollbar {
+        width: 6px;
+    }
+    
+    .tooltip-menu-content::-webkit-scrollbar-track {
+        background: #2c3e50;
+        border-radius: 3px;
+    }
+    
+    .tooltip-menu-content::-webkit-scrollbar-thumb {
+        background: #e74c3c;
+        border-radius: 3px;
+    }
+    
+    .tooltip-section {
+        margin-bottom: 16px;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        padding-bottom: 12px;
+    }
+    
+    .tooltip-section-title {
+        color: #e74c3c;
+        font-size: 13px;
+        font-weight: bold;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    
+    .tooltip-item {
+        margin-bottom: 8px;
+        font-size: 11px;
+        line-height: 1.4;
+    }
+    
+    .tooltip-symbol {
+        color: #f39c12;
+        font-weight: bold;
+        font-family: monospace;
+        font-size: 11px;
+        display: inline-block;
+        min-width: 70px;
+    }
+    
+    .tooltip-desc {
+        color: #ecf0f1;
+        margin-left: 8px;
+    }
+    
+    .tooltip-formula {
+        font-family: monospace;
+        font-size: 10px;
+        color: #95a5a6;
+        margin-top: 2px;
+        margin-left: 78px;
+    }
+    
+    .tooltip-note {
+        background: rgba(231, 76, 60, 0.2);
+        padding: 8px;
+        border-radius: 6px;
+        font-size: 10px;
+        color: #bdc3c7;
+        margin-top: 8px;
+        text-align: center;
+        border-left: 3px solid #e74c3c;
+    }
+    
+    /* Кнопка сворачивания/разворачивания */
+    .tooltip-toggle {
+        position: fixed;
+        left: 20px;
+        top: 100px;
+        width: 40px;
+        height: 40px;
+        background: #e74c3c;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        z-index: 1001;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        transition: all 0.3s ease;
+        font-size: 20px;
+        font-weight: bold;
+        color: white;
+    }
+    
+    .tooltip-toggle:hover {
+        transform: scale(1.05);
+        background: #c0392b;
+    }
+    
+    /* Анимация появления */
+    @keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateX(-20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateX(0);
+        }
+    }
+    
+    .tooltip-menu {
+        animation: slideIn 0.3s ease;
+    }
+    </style>
+    
+    <script>
+    // JavaScript для управления сворачиванием/разворачиванием подсказки
+    function toggleTooltip() {
+        var menu = document.getElementById('tooltip-menu');
+        var toggle = document.getElementById('tooltip-toggle');
+        if (menu.style.display === 'none') {
+            menu.style.display = 'block';
+            toggle.innerHTML = '?';
+            toggle.style.background = '#e74c3c';
+        } else {
+            menu.style.display = 'none';
+            toggle.innerHTML = '?';
+            toggle.style.background = '#2c3e50';
+        }
+    }
+    </script>
+    """, unsafe_allow_html=True)
+    
+    # ============================================================================
+    # HTML-КОМПОНЕНТ ПОДСКАЗКИ
+    # ============================================================================
+    st.markdown("""
+    <div id="tooltip-toggle" class="tooltip-toggle" onclick="toggleTooltip()" style="cursor: pointer;">?</div>
+    
+    <div id="tooltip-menu" class="tooltip-menu" style="display: block;">
+        <div class="tooltip-menu-header" onclick="toggleTooltip()">
+            📖 Справочник обозначений <span style="font-size: 12px;">▼</span>
+        </div>
+        <div class="tooltip-menu-content">
+            
+            <!-- ==================== ОСНОВНЫЕ ПАРАМЕТРЫ ==================== -->
+            <div class="tooltip-section">
+                <div class="tooltip-section-title">
+                    <span>🔬</span> Основные параметры состава
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">x</span>
+                    <span class="tooltip-desc">Концентрация допанта в формуле AB₁₋xDxO₃₋x/₂</span>
+                    <div class="tooltip-formula">x = [D] / ([B] + [D])</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">x(inv,in)</span>
+                    <span class="tooltip-desc">Начальное значение x в исследованном диапазоне</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">x(inv,end)</span>
+                    <span class="tooltip-desc">Конечное значение x в исследованном диапазоне</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">x(boundary)</span>
+                    <span class="tooltip-desc">Предел растворимости (граница области гомогенности)</span>
+                    <div class="tooltip-formula">"—" означает x(boundary) ≥ x(inv,end)</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">x(max)</span>
+                    <span class="tooltip-desc">Концентрация допанта, при которой максимальна проводимость</span>
+                </div>
+            </div>
+            
+            <!-- ==================== ИОННЫЕ РАДИУСЫ ==================== -->
+            <div class="tooltip-section">
+                <div class="tooltip-section-title">
+                    <span>⚛️</span> Ионные радиусы (Шеннон, Å)
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">r(A)</span>
+                    <span class="tooltip-desc">Радиус A-катиона (КЧ=12, обычно Ba²⁺ = 1.61, Sr²⁺ = 1.44)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">r(B)</span>
+                    <span class="tooltip-desc">Радиус B-катиона (КЧ=6, Ce⁴⁺ = 0.87, Zr⁴⁺ = 0.72, Sn⁴⁺ = 0.69, Ti⁴⁺ = 0.605, Hf⁴⁺ = 0.71)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">r(D)</span>
+                    <span class="tooltip-desc">Радиус допанта (КЧ=6, обычно 3+, напр. Gd³⁺ = 0.938, Y³⁺ = 0.90, In³⁺ = 0.80, Sc³⁺ = 0.745)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">r(O)</span>
+                    <span class="tooltip-desc">Радиус кислорода O²⁻ (КЧ=6, 1.40 Å)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">r_avg_B</span>
+                    <span class="tooltip-desc">Средний радиус в позиции B: (1-x)·r(B) + x·r(D)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">Δr</span>
+                    <span class="tooltip-desc">Разность радиусов: |r(D) - r(B)|</span>
+                    <div class="tooltip-formula">Мера искажения решетки при допировании</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">Δr/r_B</span>
+                    <span class="tooltip-desc">Относительная разность радиусов (dr_rel)</span>
+                </div>
+            </div>
+            
+            <!-- ==================== ФАКТОР ТОЛЕРАНТНОСТИ ==================== -->
+            <div class="tooltip-section">
+                <div class="tooltip-section-title">
+                    <span>📐</span> Фактор толерантности Гольдшмидта
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">t</span>
+                    <span class="tooltip-desc">Фактор толерантности: (r_A + r_O) / [√2·(r_avg_B + r_O)]</span>
+                    <div class="tooltip-formula">t = 0.9-1.0 — стабильный перовскит, t > 1.05 — гексагональная фаза, t < 0.85 — ильменит/другие структуры</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">Δt</span>
+                    <span class="tooltip-desc">Диапазон изменения t: t(x=0) - t(x_boundary)</span>
+                    <div class="tooltip-formula">Мера изменения геометрической стабильности при допировании</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">dt/dx</span>
+                    <span class="tooltip-desc">Скорость изменения t с ростом x (t_gradient)</span>
+                </div>
+            </div>
+            
+            <!-- ==================== ЭЛЕКТРООТРИЦАТЕЛЬНОСТЬ ==================== -->
+            <div class="tooltip-section">
+                <div class="tooltip-section-title">
+                    <span>⚡</span> Электроотрицательность (Полинг)
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">χ(A), χ(B), χ(D)</span>
+                    <span class="tooltip-desc">Электроотрицательность элементов (Ba: 0.89, Ce: 1.12, Gd: 1.20, Y: 1.22, In: 1.78, Sc: 1.36)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">χ_avg_B</span>
+                    <span class="tooltip-desc">Средняя χ в позиции B: (1-x)·χ(B) + x·χ(D)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">Δχ</span>
+                    <span class="tooltip-desc">|χ_avg_B - χ(A)| — разность электроотрицательностей между B- и A-позициями</span>
+                    <div class="tooltip-formula">Влияет на ковалентность связи и стабильность структуры</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">dΔχ/dx</span>
+                    <span class="tooltip-desc">Скорость изменения Δχ с ростом x (Δχ_gradient)</span>
+                </div>
+            </div>
+            
+            <!-- ==================== ОБЪЕМНЫЕ ХАРАКТЕРИСТИКИ ==================== -->
+            <div class="tooltip-section">
+                <div class="tooltip-section-title">
+                    <span>🧊</span> Объемные характеристики
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">V_cations</span>
+                    <span class="tooltip-desc">Объем катионов и анионов: 16π/3 × [r(A)³ + (1-x)·r(B)³ + x·r(D)³ + (3-x/2)·r(O)³]</span>
+                    <div class="tooltip-formula">Суммарный объем ионов в элементарной ячейке</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">V_cell</span>
+                    <span class="tooltip-desc">Объем элементарной ячейки: M / (ρ × N_A)</span>
+                    <div class="tooltip-formula">M — молярная масса, ρ — плотность, N_A — число Авогадро</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">V_free</span>
+                    <span class="tooltip-desc">Свободный объем: V_cell - V_cations</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">φ</span>
+                    <span class="tooltip-desc">Доля свободного объема: V_free / V_cell (free_volume_fraction)</span>
+                    <div class="tooltip-formula">Связан с подвижностью ионов кислорода</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">η</span>
+                    <span class="tooltip-desc">Фактор упаковки: V_cations / V_cell (packing_factor)</span>
+                </div>
+            </div>
+            
+            <!-- ==================== ЭНЕРГЕТИЧЕСКИЕ ПАРАМЕТРЫ ==================== -->
+            <div class="tooltip-section">
+                <div class="tooltip-section-title">
+                    <span>🔥</span> Энергетические параметры
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">E_form</span>
+                    <span class="tooltip-desc">Энергия образования твердого раствора (eV/atom)</span>
+                    <div class="tooltip-formula">(1-x)·E_form(BO₃) + x·E_form(DO₁.₅) + ΔE_mixing</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">E_g</span>
+                    <span class="tooltip-desc">Ширина запрещенной зоны (band gap, eV)</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">ε_strain</span>
+                    <span class="tooltip-desc">Энергия деформации решетки: Δr² × (1-x) × x</span>
+                    <div class="tooltip-formula">Оценка вклада упругой деформации в стабилизацию</div>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">[V_O]</span>
+                    <span class="tooltip-desc">Концентрация кислородных вакансий: x/2</span>
+                    <div class="tooltip-formula">Определяет ионную проводимость</div>
+                </div>
+            </div>
+            
+            <!-- ==================== ДОПОЛНИТЕЛЬНЫЕ ПАРАМЕТРЫ ==================== -->
+            <div class="tooltip-section">
+                <div class="tooltip-section-title">
+                    <span>📊</span> Дополнительные параметры
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">solubility_window</span>
+                    <span class="tooltip-desc">Ширина области гомогенности: x_boundary - x_inv_in</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">stability_margin</span>
+                    <span class="tooltip-desc">Запас стабильности: (x_boundary - x_max) / x_boundary</span>
+                </div>
+                <div class="tooltip-item">
+                    <span class="tooltip-symbol">x_rel_max</span>
+                    <span class="tooltip-desc">Относительное положение x_max: x_max / x_boundary</span>
+                </div>
+            </div>
+            
+            <!-- ==================== ПРИМЕЧАНИЕ ОБ ОБОЗНАЧЕНИЯХ ==================== -->
+            <div class="tooltip-note">
+                <span>💡</span> <strong>Обозначения на графиках:</strong><br>
+                • <span style="color: #e74c3c;">●</span> — точные значения x(boundary)<br>
+                • <span style="color: #e74c3c; opacity: 0.3;">○</span> — нижние оценки (x(boundary) ≥ x(inv,end))<br>
+                • Цвет маркера — B-катион<br>
+                • Форма маркера — допант D
+            </div>
+            
+            <div class="tooltip-note" style="margin-top: 8px;">
+                <span>📐</span> <strong>Формула соединения:</strong> AB₁₋xDxO₃₋x/₂<br>
+                Допирование акцепторными катионами D³⁺ создает кислородные вакансии для компенсации заряда
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
     st.title("🧪 Perovskite Solubility and Conductivity Analysis")
     st.markdown("---")
+
     
     # Боковая панель
     with st.sidebar:

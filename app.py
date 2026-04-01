@@ -2365,8 +2365,9 @@ def main():
     with st.sidebar:
         st.header("⚙️ Controls")
         
+        # Загрузка файла
         uploaded_file = st.file_uploader(
-            "Upload Excel file",
+            "Upload Excel file", 
             type=['xlsx', 'xls'],
             help="Upload your data file with perovskite compositions"
         )
@@ -2387,6 +2388,79 @@ def main():
             """)
             return
         
+        # ============================================================================
+        # ПОДСКАЗКА С ПОЯСНЕНИЯМИ ВЕЛИЧИН (ДОБАВИТЬ ЗДЕСЬ)
+        # ============================================================================
+        with st.expander("ℹ️ Variable Definitions & Descriptions", expanded=False):
+            st.markdown("""
+            ### 📐 **Geometric Parameters**
+            
+            | Symbol | Description | Formula / Notes |
+            |--------|-------------|-----------------|
+            | **r_A, r_B, r_D** | Ionic radii of A, B, and D cations | Shannon radii (Å) |
+            | **Δr** | Radius difference | `Δr = |r_D - r_B|` (Å) |
+            | **Δr/r_B** | Relative radius difference | `Δr_rel = Δr / r_B` |
+            | **r_avg_B** | Average B-site radius | `r_avg = (1-x)·r_B + x·r_D` |
+            | **t** | Tolerance factor (Goldschmidt) | `t = (r_A + r_O) / [√2·(r_avg_B + r_O)]` |
+            | **Δt** | Tolerance factor change | `Δt = t(x=0) - t(x_boundary)` |
+            | **dt/dx** | Tolerance factor gradient | Rate of change of t with x |
+            
+            ### ⚡ **Electronegativity Parameters**
+            
+            | Symbol | Description | Formula / Notes |
+            |--------|-------------|-----------------|
+            | **χ_A, χ_B, χ_D** | Electronegativity (Pauling scale) | Values from Pauling scale |
+            | **χ_avg_B** | Average B-site electronegativity | `χ_avg = (1-x)·χ_B + x·χ_D` |
+            | **Δχ** | Electronegativity difference | `Δχ = |χ_avg_B - χ_A|` |
+            | **dΔχ/dx** | Electronegativity gradient | Rate of change of Δχ with x |
+            
+            ### 🧊 **Volumetric Parameters**
+            
+            | Symbol | Description | Formula / Notes |
+            |--------|-------------|-----------------|
+            | **V_cations** | Cation + anion volume | `V_cat = (16π/3)·[r_A³ + (1-x)r_B³ + x·r_D³ + (3-x/2)r_O³]` (Å³) |
+            | **V_cell** | Unit cell volume | `V_cell = M / (ρ·N_A)` (Å³) |
+            | **V_free** | Free volume | `V_free = V_cell - V_cations` (Å³) |
+            | **φ** | Free volume fraction | `φ = V_free / V_cell` |
+            | **η** | Packing factor | `η = V_cations / V_cell` |
+            
+            ### 🔥 **Thermodynamic Parameters**
+            
+            | Symbol | Description | Formula / Notes |
+            |--------|-------------|-----------------|
+            | **E_form** | Formation energy | `E_form = (1-x)·E_form(BO₃) + x·E_form(DO₁.₅)` (eV/atom) |
+            | **E_g** | Band gap | Linear interpolation between base and dopant oxides (eV) |
+            | **ε_strain** | Lattice strain energy | `ε_strain = Δr²·(1-x)·x` (arb. units) |
+            | **[V_O]** | Oxygen vacancy concentration | `[V_O] = x/2` (per formula unit) |
+            | **M** | Molar mass | `M = M_A + (1-x)M_B + x·M_D + (3-x/2)M_O` (g/mol) |
+            
+            ### 📊 **Composition Parameters**
+            
+            | Symbol | Description | Notes |
+            |--------|-------------|-------|
+            | **x_boundary** | Solubility limit | Maximum x for single-phase solid solution |
+            | **x_max** | Optimum conductivity concentration | x where conductivity is maximum |
+            | **x_inv_in** | Start of investigated range | Minimum x studied |
+            | **x_inv_end** | End of investigated range | Maximum x studied |
+            | **x(max)/x(boundary)** | Relative position | Ratio of conductivity max to solubility limit |
+            
+            ### 🧪 **Phase Parameters**
+            
+            | Symbol | Description |
+            |--------|-------------|
+            | **Impurity phase(s)** | Secondary phases observed beyond solubility limit |
+            | **has_impurity** | Boolean indicating impurity presence |
+            
+            ### 📈 **Statistical Parameters**
+            
+            | Symbol | Description |
+            |--------|-------------|
+            | **Pearson r** | Linear correlation coefficient |
+            | **Spearman ρ** | Rank correlation coefficient |
+            | **p-value** | Statistical significance |
+            | **R²** | Coefficient of determination |
+            """)
+
         st.markdown("---")
         st.header("📊 Plot Settings")
         

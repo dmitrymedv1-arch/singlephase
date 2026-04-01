@@ -930,6 +930,381 @@ def get_dopant_statistics(df, include_lower_bounds=True, aggregate_lower_bounds=
         return pd.DataFrame(stats_list).sort_values('Median', ascending=False)
 
 # ============================================================================
+# НОВЫЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (ДЛЯ ВКЛАДКИ 2)
+# ============================================================================
+def plot_solubility_vs_delta_chi(df, ax, aggregate_mode=False):
+    """График 2a: x(boundary) vs Δχ (разница электроотрицательностей)"""
+    valid = df.dropna(subset=['Δχ', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for Δχ analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'Δχ'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'Δχ'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'Δχ'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'Δχ'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Electronegativity Difference Δχ = |χ_avg_B - χ_A|')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Electronegativity Difference\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Electronegativity Difference\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_avg_chi(df, ax, aggregate_mode=False):
+    """График 2b: x(boundary) vs χ_avg_B (средняя электроотрицательность B-сайта)"""
+    valid = df.dropna(subset=['χ_avg_B', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for χ_avg_B analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'χ_avg_B'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'χ_avg_B'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'χ_avg_B'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'χ_avg_B'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Average B-site Electronegativity χ_avg_B = (1-x)·χ_B + x·χ_D')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Average B-site Electronegativity\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Average B-site Electronegativity\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_avg_radius(df, ax, aggregate_mode=False):
+    """График 2c: x(boundary) vs r_avg_B (средний ионный радиус B-сайта)"""
+    valid = df.dropna(subset=['r_avg_B', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for r_avg_B analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'r_avg_B'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'r_avg_B'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'r_avg_B'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'r_avg_B'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Average B-site Ionic Radius r_avg_B = (1-x)·r_B + x·r_D (Å)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Average B-site Radius\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Average B-site Radius\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_formation_energy(df, ax, aggregate_mode=False):
+    """График 2d: x(boundary) vs E_form (энергия образования)"""
+    valid = df.dropna(subset=['E_form', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for formation energy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'E_form'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'E_form'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'E_form'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'E_form'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Formation Energy E_form (eV/atom)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Formation Energy\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Formation Energy\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_strain_energy(df, ax, aggregate_mode=False):
+    """График 2e: x(boundary) vs lattice_strain_energy (энергия деформации решетки)"""
+    valid = df.dropna(subset=['lattice_strain_energy', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for lattice strain energy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'lattice_strain_energy'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'lattice_strain_energy'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'lattice_strain_energy'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'lattice_strain_energy'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Lattice Strain Energy ε_strain = (Δr)²·(1-x)·x (arb. units)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Lattice Strain Energy\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Lattice Strain Energy\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_vacancy_conc(df, ax, aggregate_mode=False):
+    """График 2f: x(boundary) vs oxygen_vacancy_conc (концентрация кислородных вакансий)"""
+    valid = df.dropna(subset=['oxygen_vacancy_conc', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for oxygen vacancy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'oxygen_vacancy_conc'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'oxygen_vacancy_conc'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'oxygen_vacancy_conc'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'oxygen_vacancy_conc'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Oxygen Vacancy Concentration [V_O] = x/2 (per formula unit)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Oxygen Vacancy Concentration\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Oxygen Vacancy Concentration\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+# ============================================================================
 # МОДИФИЦИРОВАННЫЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ С ПОДДЕРЖКОЙ АГРЕГАЦИИ
 # ============================================================================
 def plot_solubility_vs_dr(df, ax, aggregate_mode=False):
@@ -1883,134 +2258,6 @@ def plot_shift_vs_dr_bubble(df, aggregate_mode=False):
 # ============================================================================
 # СУЩЕСТВУЮЩИЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (НЕ ИЗМЕНЯЮТСЯ)
 # ============================================================================
-# ... (все остальные функции plot_* остаются без изменений)
-# Для экономии места в ответе, остальные функции не дублируются,
-# но в финальном коде они должны быть сохранены полностью
-
-# ============================================================================
-# ФУНКЦИИ ДЛЯ НОВЫХ ГРАФИКОВ (ОБЪЕМНЫЕ И ТЕРМОДИНАМИЧЕСКИЕ)
-# ============================================================================
-def plot_free_volume_vs_xboundary(df, ax, aggregate_mode=False):
-    """График 30: Свободный объем vs x_boundary"""
-    valid = df.dropna(subset=['free_volume_fraction', 'x_boundary_value'])
-    
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for free volume analysis',
-                ha='center', va='center', transform=ax.transAxes)
-        return ax
-    
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'free_volume_fraction'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'free_volume_fraction'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'free_volume_fraction'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'free_volume_fraction'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
-    
-    ax.set_xlabel('Free Volume Fraction φ = V_free / V_cell')
-    ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Free Volume Fraction')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-    return ax
-
-def plot_formation_energy_vs_xboundary(df, ax, aggregate_mode=False):
-    """График 31: Энергия образования vs x_boundary"""
-    valid = df.dropna(subset=['E_form', 'x_boundary_value'])
-    
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for formation energy analysis',
-                ha='center', va='center', transform=ax.transAxes)
-        return ax
-    
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'E_form'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'E_form'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'E_form'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'E_form'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
-    
-    ax.set_xlabel('Formation Energy (eV/atom)')
-    ax.set_ylabel('x(boundary)')
-    ax.set_title('Solubility Limit vs Formation Energy')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-    return ax
-
-# ============================================================================
-# ОСТАЛЬНЫЕ ГРАФИКИ (СОХРАНЯЮТСЯ БЕЗ ИЗМЕНЕНИЙ)
-# ============================================================================
 def plot_pca(df):
     """График 7: PCA анализ"""
     features = ['dr', 'dr_rel', 'tolerance_factor', 'x_boundary_value']
@@ -2788,6 +3035,124 @@ def plot_comprehensive_correlation_matrix(df, include_lower_bounds=True):
     plt.tight_layout()
     return fig
 
+def plot_free_volume_vs_xboundary(df, ax, aggregate_mode=False):
+    """График 30: Свободный объем vs x_boundary"""
+    valid = df.dropna(subset=['free_volume_fraction', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for free volume analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'free_volume_fraction'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'free_volume_fraction'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'free_volume_fraction'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'free_volume_fraction'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Free Volume Fraction φ = V_free / V_cell')
+    ax.set_ylabel('x(boundary)')
+    ax.set_title('Solubility Limit vs Free Volume Fraction')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_formation_energy_vs_xboundary(df, ax, aggregate_mode=False):
+    """График 31: Энергия образования vs x_boundary"""
+    valid = df.dropna(subset=['E_form', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for formation energy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'E_form'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'E_form'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'E_form'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'E_form'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Formation Energy (eV/atom)')
+    ax.set_ylabel('x(boundary)')
+    ax.set_title('Solubility Limit vs Formation Energy')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
 # ============================================================================
 # ОСНОВНОЕ STREAMLIT-ПРИЛОЖЕНИЕ
 # ============================================================================
@@ -3116,7 +3481,7 @@ def main():
                     st.dataframe(corr_df, use_container_width=True)
         
         # ============================================================================
-        # ВКЛАДКА 2: SOLUBILITY ANALYSIS
+        # ВКЛАДКА 2: SOLUBILITY ANALYSIS (ОБНОВЛЕНА С НОВЫМИ ГРАФИКАМИ)
         # ============================================================================
         with tab2:
             st.subheader("Solubility Limit Analysis")
@@ -3129,9 +3494,15 @@ def main():
                     "Δr Heatmap with x(boundary)",
                     "Top Dopants Violin Plot",
                     "Critical Δr Threshold",
-                    "Research Intensity Matrix"
+                    "Research Intensity Matrix",
+                    "2a: Solubility vs Electronegativity Difference (Δχ)",
+                    "2b: Solubility vs Average B-site Electronegativity (χ_avg_B)",
+                    "2c: Solubility vs Average B-site Radius (r_avg_B)",
+                    "2d: Solubility vs Formation Energy (E_form)",
+                    "2e: Solubility vs Lattice Strain Energy (ε_strain)",
+                    "2f: Solubility vs Oxygen Vacancy Concentration ([V_O])"
                 ],
-                default=["Solubility vs Radius Difference", "Δr Heatmap with x(boundary)"]
+                default=["Solubility vs Radius Difference", "Δr Heatmap with x(boundary)", "2a: Solubility vs Electronegativity Difference (Δχ)"]
             )
             
             n_plots = len(solubility_plots)
@@ -3184,6 +3555,43 @@ def main():
                             plt.close(matrix_fig)
                             st.dataframe(pub_matrix, use_container_width=True)
                             plot_idx -= 1
+                    
+                    # НОВЫЕ ГРАФИКИ 2a-2f
+                    elif plot_name == "2a: Solubility vs Electronegativity Difference (Δχ)":
+                        if 'Δχ' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            plot_solubility_vs_delta_chi(filtered_df, ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'Δχ data not available', ha='center', va='center')
+                    
+                    elif plot_name == "2b: Solubility vs Average B-site Electronegativity (χ_avg_B)":
+                        if 'χ_avg_B' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            plot_solubility_vs_avg_chi(filtered_df, ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'χ_avg_B data not available', ha='center', va='center')
+                    
+                    elif plot_name == "2c: Solubility vs Average B-site Radius (r_avg_B)":
+                        if 'r_avg_B' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            plot_solubility_vs_avg_radius(filtered_df, ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'r_avg_B data not available', ha='center', va='center')
+                    
+                    elif plot_name == "2d: Solubility vs Formation Energy (E_form)":
+                        if 'E_form' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            plot_solubility_vs_formation_energy(filtered_df, ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'E_form data not available', ha='center', va='center')
+                    
+                    elif plot_name == "2e: Solubility vs Lattice Strain Energy (ε_strain)":
+                        if 'lattice_strain_energy' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            plot_solubility_vs_strain_energy(filtered_df, ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'lattice_strain_energy data not available', ha='center', va='center')
+                    
+                    elif plot_name == "2f: Solubility vs Oxygen Vacancy Concentration ([V_O])":
+                        if 'oxygen_vacancy_conc' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            plot_solubility_vs_vacancy_conc(filtered_df, ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'oxygen_vacancy_conc data not available', ha='center', va='center')
                     
                     if not show_grid:
                         ax.grid(False)
@@ -3466,6 +3874,13 @@ def main():
         ### Key improvements in this version:
         - **NEW: Aggregated Mode** - Treats '-' entries as x(inv,end) for conservative estimates
         - **NEW: Visual distinction for lower bounds** - '≥' annotations on plots in aggregated mode
+        - **NEW: Extended Solubility Analysis** - Added 6 new plots (2a-2f) for comprehensive descriptor analysis:
+          - Δχ (electronegativity difference)
+          - χ_avg_B (average B-site electronegativity)
+          - r_avg_B (average B-site ionic radius)
+          - E_form (formation energy)
+          - ε_strain (lattice strain energy)
+          - [V_O] (oxygen vacancy concentration)
         - **Improved statistics** - Mean solubility now includes lower bound estimates when aggregated
         - **New volumetric descriptors**: V_cations, V_cell, V_free, packing factor, free volume fraction
         - **New thermodynamic descriptors**: Formation energy, band gap, lattice strain energy

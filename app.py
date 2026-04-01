@@ -713,6 +713,40 @@ def process_data(df, aggregate_lower_bounds=False):
     else:
         df_processed['year'] = None
     
+    # ============================================================================
+    # НОВАЯ ЛОГИКА: В АГРЕГИРОВАННОМ РЕЖИМЕ ВЫПОЛНЯЕМ ДЕДУПЛИКАЦИЮ
+    # ============================================================================
+    if aggregate_lower_bounds:
+        # Создаем агрегированную колонку для x_boundary
+        df_processed['x_boundary_aggregated'] = df_processed.apply(
+            lambda row: row['x_inv_end'] if row['x_boundary_type'] == 'lower_bound' else row['x_boundary_value'],
+            axis=1
+        )
+        
+        # Для каждой уникальной комбинации (B_element, D_element) берем максимальное значение
+        # Это важно, так как если есть несколько записей с разными x_inv_end для одной пары,
+        # реальная растворимость ≥ максимального из исследованных значений
+        grouped = df_processed.groupby(['B_element', 'D_element'])['x_boundary_aggregated'].max().reset_index()
+        grouped.rename(columns={'x_boundary_aggregated': 'x_boundary_aggregated_max'}, inplace=True)
+        
+        # Объединяем обратно
+        df_processed = df_processed.merge(grouped, on=['B_element', 'D_element'], how='left')
+        
+        # Для каждой строки устанавливаем максимальное значение
+        # Это гарантирует, что для пары B-D с несколькими записями мы используем максимальную нижнюю оценку
+        df_processed['x_boundary_value'] = df_processed['x_boundary_aggregated_max']
+        
+        # Обновляем тип для агрегированных записей
+        df_processed['x_boundary_type_original'] = df_processed['x_boundary_type']
+        df_processed['x_boundary_type'] = df_processed.apply(
+            lambda row: 'exact' if row['x_boundary_type_original'] == 'exact' 
+            else ('aggregated_lower_bound' if row['x_boundary_type_original'] == 'lower_bound' else 'none'),
+            axis=1
+        )
+        
+        # Удаляем временные колонки
+        df_processed.drop(columns=['x_boundary_aggregated', 'x_boundary_aggregated_max'], inplace=True)
+    
     # Рассчитываем дескрипторы для каждой строки (расширенная версия)
     descriptors_list = []
     for idx, row in df_processed.iterrows():
@@ -725,15 +759,6 @@ def process_data(df, aggregate_lower_bounds=False):
     result = pd.concat([df_processed, descriptors_df], axis=1)
     
     # Дополнительные параметры
-    # В режиме агрегации используем x_boundary_value_aggregated для расчетов
-    if aggregate_lower_bounds:
-        # Создаем агрегированную колонку для x_boundary
-        result['x_boundary_aggregated'] = result.apply(
-            lambda row: row['x_inv_end'] if row['x_boundary_type'] == 'lower_bound' else row['x_boundary_value'],
-            axis=1
-        )
-        result['x_boundary_value'] = result['x_boundary_aggregated']
-    
     if 'x_boundary_value' in result.columns and 'x_inv_end' in result.columns:
         with np.errstate(divide='ignore', invalid='ignore'):
             result['x_rel_boundary'] = result['x_boundary_value'] / result['x_inv_end']
@@ -834,49 +859,75 @@ def feature_importance_analysis(df):
     return importance_df, r2
 
 def get_dopant_statistics(df, include_lower_bounds=True, aggregate_lower_bounds=False):
-    """Получение статистики по допантам с учетом типа значений"""
+    """Получение статистики по допантам с учетом типа значений
+    
+    В агрегированном режиме используем максимальную нижнюю оценку для каждой пары B-D
+    """
     if 'x_boundary_value' not in df.columns or 'D_element' not in df.columns:
         return pd.DataFrame()
     
-    if include_lower_bounds:
-        df_stats = df.dropna(subset=['x_boundary_value'])
+    if aggregate_lower_bounds:
+        # В агрегированном режиме: для каждой пары (B_element, D_element) берем максимальное значение
+        grouped = df.groupby(['B_element', 'D_element'])['x_boundary_value'].max().reset_index()
+        df_stats = grouped.dropna(subset=['x_boundary_value'])
+        
+        if len(df_stats) == 0:
+            return pd.DataFrame()
+        
+        stats_list = []
+        for dopant in df_stats['D_element'].unique():
+            dopant_data = df_stats[df_stats['D_element'] == dopant]['x_boundary_value']
+            
+            # Подсчет количества уникальных пар B-D для этого допанта
+            unique_pairs = df_stats[df_stats['D_element'] == dopant].groupby('B_element').size().count()
+            
+            stats_list.append({
+                'Dopant': dopant,
+                'Count': len(dopant_data),
+                'Unique B-D pairs': unique_pairs,
+                'Mean': dopant_data.mean(),
+                'Median': dopant_data.median(),
+                'Std': dopant_data.std(),
+                'Min': dopant_data.min(),
+                'Max': dopant_data.max(),
+                'Exact values': len(dopant_data),  # В агрегированном режиме все считаем точными для статистики
+                'Lower bounds': 0
+            })
+        
+        return pd.DataFrame(stats_list).sort_values('Median', ascending=False)
+    
     else:
-        if aggregate_lower_bounds:
+        # Стандартный режим
+        if include_lower_bounds:
             df_stats = df.dropna(subset=['x_boundary_value'])
         else:
             df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
-    
-    if len(df_stats) == 0:
-        return pd.DataFrame()
-    
-    stats_list = []
-    for dopant in df_stats['D_element'].unique():
-        dopant_data = df_stats[df_stats['D_element'] == dopant]['x_boundary_value']
         
-        if aggregate_lower_bounds:
-            types_in_dopant = df[df['D_element'] == dopant].copy()
-            # В режиме агрегации все точки считаются точными для статистики
-            exact_count = len(types_in_dopant)
-            lower_count = 0
-        else:
+        if len(df_stats) == 0:
+            return pd.DataFrame()
+        
+        stats_list = []
+        for dopant in df_stats['D_element'].unique():
+            dopant_data = df_stats[df_stats['D_element'] == dopant]['x_boundary_value']
+            
             types_in_dopant = df[df['D_element'] == dopant]['x_boundary_type'].value_counts()
             exact_count = types_in_dopant.get('exact', 0)
             lower_count = types_in_dopant.get('lower_bound', 0)
+            
+            stats_list.append({
+                'Dopant': dopant,
+                'Count': len(dopant_data),
+                'Mean': dopant_data.mean(),
+                'Median': dopant_data.median(),
+                'Std': dopant_data.std(),
+                'Min': dopant_data.min(),
+                'Max': dopant_data.max(),
+                'Exact values': exact_count,
+                'Lower bounds': lower_count,
+                'Includes lower bounds': include_lower_bounds
+            })
         
-        stats_list.append({
-            'Dopant': dopant,
-            'Count': len(dopant_data),
-            'Mean': dopant_data.mean(),
-            'Median': dopant_data.median(),
-            'Std': dopant_data.std(),
-            'Min': dopant_data.min(),
-            'Max': dopant_data.max(),
-            'Exact values': exact_count,
-            'Lower bounds': lower_count,
-            'Includes lower bounds': include_lower_bounds
-        })
-    
-    return pd.DataFrame(stats_list).sort_values('Median', ascending=False)
+        return pd.DataFrame(stats_list).sort_values('Median', ascending=False)
 
 # ============================================================================
 # МОДИФИЦИРОВАННЫЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ С ПОДДЕРЖКОЙ АГРЕГАЦИИ
@@ -1227,44 +1278,139 @@ def plot_relative_position(df, ax, aggregate_mode=False):
     return ax
 
 def plot_b_site_statistics(df, include_lower_bounds=True, aggregate_mode=False):
-    """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)"""
+    """График 10: Статистика по B-элементам (столбчатая диаграмма с ошибками)
+    
+    В агрегированном режиме:
+    - Используем максимальную нижнюю оценку для каждой пары B-D
+    - Показываем диапазон значений как ошибку (min-max)
+    """
     if aggregate_mode:
-        # В режиме агрегации используем все точки
-        df_stats = df.dropna(subset=['x_boundary_value'])
+        # В режиме агрегации используем все точки, но с дедупликацией по парам B-D
+        # Группируем по B_element и D_element, берем максимальное значение
+        grouped = df.groupby(['B_element', 'D_element'])['x_boundary_value'].max().reset_index()
+        
+        # Затем группируем по B_element для статистики
+        df_stats_raw = grouped.groupby('B_element')['x_boundary_value'].agg(
+            mean='mean',
+            median='median',
+            count='count',
+            std='std',
+            min='min',
+            max='max'
+        ).round(3)
+        
+        # Переименовываем колонки для совместимости
+        df_stats_raw = df_stats_raw.rename(columns={
+            'mean': 'mean',
+            'median': 'median',
+            'count': 'count',
+            'std': 'std'
+        })
+        
+        # Также считаем количество точных и агрегированных записей
+        type_counts = df.groupby('B_element')['x_boundary_type'].value_counts().unstack(fill_value=0)
+        if 'exact' in type_counts.columns:
+            df_stats_raw['exact_count'] = type_counts['exact']
+        else:
+            df_stats_raw['exact_count'] = 0
+        if 'aggregated_lower_bound' in type_counts.columns:
+            df_stats_raw['lower_bound_count'] = type_counts['aggregated_lower_bound']
+        else:
+            df_stats_raw['lower_bound_count'] = 0
+        
+        stats_df = df_stats_raw
+        
+        # Для отображения ошибки используем не стандартное отклонение, а диапазон
+        # Для этого создадим колонки min и max для каждого B-элемента
+        min_max_df = df.groupby('B_element')['x_boundary_value'].agg(['min', 'max']).round(3)
+        stats_df['min'] = min_max_df['min']
+        stats_df['max'] = min_max_df['max']
+        
+        # Ошибка как расстояние от среднего до максимума (для верхней планки)
+        # и от минимума до среднего (для нижней планки)
+        stats_df['error_upper'] = stats_df['max'] - stats_df['mean']
+        stats_df['error_lower'] = stats_df['mean'] - stats_df['min']
+        
     else:
+        # Стандартный режим
         if include_lower_bounds:
             df_stats = df.dropna(subset=['x_boundary_value'])
         else:
             df_stats = df[df['x_boundary_type'] == 'exact'].dropna(subset=['x_boundary_value'])
-    
-    stats_df = df_stats.groupby('B_element')['x_boundary_value'].agg(['mean', 'median', 'count', 'std']).round(3)
-    
-    # Подсчет типов значений
-    type_counts = df.groupby('B_element')['x_boundary_type'].value_counts().unstack(fill_value=0)
-    if 'exact' in type_counts.columns:
-        stats_df['exact_count'] = type_counts['exact']
-    if 'lower_bound' in type_counts.columns:
-        stats_df['lower_bound_count'] = type_counts['lower_bound']
+        
+        stats_df = df_stats.groupby('B_element')['x_boundary_value'].agg(
+            mean='mean', 
+            median='median', 
+            count='count', 
+            std='std'
+        ).round(3)
+        
+        # Подсчет типов значений
+        type_counts = df.groupby('B_element')['x_boundary_type'].value_counts().unstack(fill_value=0)
+        if 'exact' in type_counts.columns:
+            stats_df['exact_count'] = type_counts['exact']
+        if 'lower_bound' in type_counts.columns:
+            stats_df['lower_bound_count'] = type_counts['lower_bound']
+        
+        # Для стандартного режима ошибка = std
+        stats_df['error_upper'] = stats_df['std']
+        stats_df['error_lower'] = stats_df['std']
+        stats_df['min'] = stats_df['mean'] - stats_df['std']
+        stats_df['max'] = stats_df['mean'] + stats_df['std']
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     
     b_sites = stats_df.index
     x_pos = np.arange(len(b_sites))
     
-    # Для графика средних значений используем данные из stats_df
-    ax1.bar(x_pos, stats_df['mean'], yerr=stats_df['std'],
-            capsize=5, color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
-            edgecolor='black', linewidth=0.5, alpha=0.8)
+    # График средних значений с асимметричными ошибками
+    if aggregate_mode:
+        # Асимметричные ошибки (нижняя и верхняя)
+        error_lower = stats_df['error_lower'].values
+        error_upper = stats_df['error_upper'].values
+        error_bars = [error_lower, error_upper]
+        
+        bars = ax1.bar(x_pos, stats_df['mean'], 
+                       color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
+                       edgecolor='black', linewidth=0.5, alpha=0.8)
+        
+        # Добавляем асимметричные error bars
+        ax1.errorbar(x_pos, stats_df['mean'], 
+                     yerr=[error_lower, error_upper],
+                     fmt='none', ecolor='black', capsize=5, capthick=1.5, elinewidth=1.5)
+        
+        # Добавляем точки для минимальных и максимальных значений
+        ax1.scatter(x_pos, stats_df['min'], color='red', s=50, 
+                   marker='v', zorder=5, label='Minimum value', alpha=0.7)
+        ax1.scatter(x_pos, stats_df['max'], color='green', s=50, 
+                   marker='^', zorder=5, label='Maximum value', alpha=0.7)
+        
+        # Добавляем аннотации с диапазоном
+        for i, (b, row) in enumerate(stats_df.iterrows()):
+            ax1.annotate(f'[{row["min"]:.2f}-{row["max"]:.2f}]', 
+                        (x_pos[i], row['max'] + 0.02),
+                        ha='center', fontsize=8, rotation=0,
+                        bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', alpha=0.7))
+        
+    else:
+        ax1.bar(x_pos, stats_df['mean'], yerr=stats_df['std'],
+                capsize=5, color=[B_COLORS.get(b, B_COLORS['default']) for b in b_sites],
+                edgecolor='black', linewidth=0.5, alpha=0.8)
+    
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(b_sites)
     ax1.set_ylabel('Mean x(boundary)')
     
     if aggregate_mode:
-        title = f'Average Solubility by B-site\n({len(df_stats)} samples, aggregated lower bounds)'
+        title = f'Average Solubility by B-site (Aggregated mode)\n'
+        title += f'Bars show mean, error bars show range [min-max]'
+        ax1.set_title(title)
     else:
         title = f'Average Solubility by B-site\n({len(df_stats)} samples)'
-    ax1.set_title(title)
+        ax1.set_title(title)
     ax1.grid(True, alpha=0.3, axis='y')
+    if aggregate_mode:
+        ax1.legend(loc='upper right')
     
     # График количества образцов
     bottom = np.zeros(len(b_sites))
@@ -1272,14 +1418,21 @@ def plot_b_site_statistics(df, include_lower_bounds=True, aggregate_mode=False):
         ax2.bar(x_pos, stats_df['exact_count'], bottom=bottom,
                 label='Exact', color='darkblue', edgecolor='black', linewidth=0.5)
         bottom += stats_df['exact_count']
-    if 'lower_bound_count' in stats_df.columns:
+    if aggregate_mode and 'lower_bound_count' in stats_df.columns:
+        ax2.bar(x_pos, stats_df['lower_bound_count'], bottom=bottom,
+                label='Aggregated (≥)', color='lightblue', edgecolor='black', linewidth=0.5, alpha=0.7)
+    elif not aggregate_mode and 'lower_bound_count' in stats_df.columns:
         ax2.bar(x_pos, stats_df['lower_bound_count'], bottom=bottom,
                 label='Lower bound', color='lightblue', edgecolor='black', linewidth=0.5, alpha=0.7)
     
     ax2.set_xticks(x_pos)
     ax2.set_xticklabels(b_sites)
     ax2.set_ylabel('Number of samples')
-    ax2.set_title('Sample Count by B-site')
+    
+    if aggregate_mode:
+        ax2.set_title('Sample Count by B-site (after aggregation)')
+    else:
+        ax2.set_title('Sample Count by B-site')
     ax2.legend()
     ax2.grid(True, alpha=0.3, axis='y')
     

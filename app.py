@@ -5,8 +5,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.cluster import DBSCAN
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.metrics import mean_absolute_error, r2_score
 from scipy import stats
 from scipy.signal import find_peaks
 from scipy.ndimage import gaussian_filter1d
@@ -15,6 +18,12 @@ import re
 from datetime import datetime
 import openpyxl
 import warnings
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import shap
+import xgboost as xgb
+from itertools import combinations
 warnings.filterwarnings('ignore')
 
 # Константы
@@ -130,6 +139,37 @@ ELECTRONEGATIVITY = {
 }
 
 # ============================================================================
+# БАЗА ДАННЫХ ЗАРЯДОВ ИОНОВ
+# ============================================================================
+IONIC_CHARGES = {
+    'Ba': 2,
+    'Sr': 2,
+    'Ce': 4,
+    'Zr': 4,
+    'Sn': 4,
+    'Ti': 4,
+    'Hf': 4,
+    'Gd': 3,
+    'Sm': 3,
+    'Y': 3,
+    'In': 3,
+    'Sc': 3,
+    'Dy': 3,
+    'Ho': 3,
+    'Yb': 3,
+    'Eu': 3,
+    'Nd': 3,
+    'La': 3,
+    'Pr': 3,
+    'Tb': 3,
+    'Er': 3,
+    'Tm': 3,
+    'Lu': 3,
+    'Ca': 2,
+    'O': -2,
+}
+
+# ============================================================================
 # БАЗА ДАННЫХ СВОЙСТВ БАЗОВЫХ СТРУКТУР
 # ============================================================================
 MATERIAL_PROPERTIES = {
@@ -237,6 +277,332 @@ D_MARKERS = {
     'Pr': 'H', 'Tb': 'd', 'Er': '8', 'Tm': 'p', 'Lu': 'P',
     'default': 'o'
 }
+
+# ============================================================================
+# НОВЫЙ КЛАСС: РАСЧЕТЧИК ДЕСКРИПТОРОВ ПЕРОВСКИТОВ
+# ============================================================================
+class PerovskiteDescriptorCalculator:
+    """Класс для расчета всех физико-химических дескрипторов перовскитов"""
+    
+    def __init__(self, a_element='Ba'):
+        self.a_element = a_element
+        self.r_O = IONIC_RADII.get(('O', -2, 6), 1.4)
+        self.χ_O = ELECTRONEGATIVITY.get('O', 3.44)
+        self.r_A = IONIC_RADII.get((a_element, 2, 12), None)
+        self.χ_A = ELECTRONEGATIVITY.get(a_element, None)
+        self.z_A = IONIC_CHARGES.get(a_element, 2)
+    
+    def get_ionic_radius(self, element, charge=None, coordination=6):
+        """Получение ионного радиуса с автоматическим определением заряда"""
+        if charge is None:
+            charge = IONIC_CHARGES.get(element, 4)
+        return IONIC_RADII.get((element, charge, coordination), None)
+    
+    def get_electronegativity(self, element):
+        return ELECTRONEGATIVITY.get(element, None)
+    
+    def get_charge(self, element):
+        return IONIC_CHARGES.get(element, None)
+    
+    def calculate_descriptors(self, b_element, d_element, x, r_B=None, r_D=None, χ_B=None, χ_D=None):
+        """
+        Расчет полного набора дескрипторов для твердого раствора AB_{1-x}D_xO_{3-x/2}
+        
+        Parameters
+        ----------
+        b_element : str
+            Элемент B-сайта
+        d_element : str
+            Элемент допанта
+        x : float
+            Концентрация допанта
+        r_B : float, optional
+            Ионный радиус B (если None, берется из базы)
+        r_D : float, optional
+            Ионный радиус D (если None, берется из базы)
+        χ_B : float, optional
+            Электроотрицательность B (если None, берется из базы)
+        χ_D : float, optional
+            Электроотрицательность D (если None, берется из базы)
+        
+        Returns
+        -------
+        dict
+            Словарь с рассчитанными дескрипторами
+        """
+        # Получение значений из базы, если не переданы
+        if r_B is None:
+            r_B = self.get_ionic_radius(b_element)
+        if r_D is None:
+            r_D = self.get_ionic_radius(d_element)
+        if χ_B is None:
+            χ_B = self.get_electronegativity(b_element)
+        if χ_D is None:
+            χ_D = self.get_electronegativity(d_element)
+        
+        z_B = self.get_charge(b_element)
+        z_D = self.get_charge(d_element)
+        
+        descriptors = {}
+        
+        # ====================================================================
+        # 1. ГЕОМЕТРИЧЕСКИЕ ДЕСКРИПТОРЫ (радиусы, размерный мисфит)
+        # ====================================================================
+        
+        # Базовые радиусы
+        descriptors['r_B'] = r_B
+        descriptors['r_D'] = r_D
+        descriptors['dr'] = abs(r_D - r_B) if None not in [r_B, r_D] else None
+        descriptors['dr_rel'] = descriptors['dr'] / r_B if (descriptors['dr'] is not None and r_B is not None and r_B != 0) else None
+        
+        # Средний радиус B-сайта
+        if None not in [r_B, r_D]:
+            descriptors['r_avg_B'] = (1 - x) * r_B + x * r_D
+        else:
+            descriptors['r_avg_B'] = None
+        
+        # Квадратичный размерный мисфит (size misfit) - более физичный дескриптор
+        # Основан на теории упругости: энергия деформации ∝ (Δr)²
+        if None not in [r_B, r_D, x]:
+            descriptors['size_misfit'] = x * (r_D - r_B) ** 2 / r_B
+            descriptors['elastic_misfit'] = ((r_D - r_B) / r_B) ** 2 * x * (1 - x)
+        else:
+            descriptors['size_misfit'] = None
+            descriptors['elastic_misfit'] = None
+        
+        # Tolerance factor Гольдшмидта
+        if None not in [self.r_A, descriptors['r_avg_B'], self.r_O]:
+            descriptors['tolerance_factor'] = (self.r_A + self.r_O) / (np.sqrt(2) * (descriptors['r_avg_B'] + self.r_O))
+        else:
+            descriptors['tolerance_factor'] = None
+        
+        # Tolerance factor при x=0
+        if None not in [self.r_A, r_B, self.r_O]:
+            descriptors['t0'] = (self.r_A + self.r_O) / (np.sqrt(2) * (r_B + self.r_O))
+        else:
+            descriptors['t0'] = None
+        
+        # Градиент tolerance factor
+        if None not in [r_B, r_D, x, self.r_A, self.r_O] and x > 0:
+            x_vals = np.linspace(0, x, 100)
+            t_vals = []
+            for xi in x_vals:
+                r_avg = (1 - xi) * r_B + xi * r_D
+                t = (self.r_A + self.r_O) / (np.sqrt(2) * (r_avg + self.r_O))
+                t_vals.append(t)
+            if len(t_vals) > 1:
+                descriptors['t_gradient'] = (t_vals[-1] - t_vals[0]) / x_vals[-1]
+            else:
+                descriptors['t_gradient'] = None
+        else:
+            descriptors['t_gradient'] = None
+        
+        # Диапазон изменения t
+        if None not in [descriptors['t0'], descriptors['tolerance_factor']]:
+            descriptors['t_range'] = descriptors['t0'] - descriptors['tolerance_factor']
+        else:
+            descriptors['t_range'] = None
+        
+        # Склонность к октаэдрическим наклонам (оценка)
+        # По Goldschmidt: при t < 0.96 начинаются наклоны
+        if descriptors['tolerance_factor'] is not None:
+            descriptors['octahedral_tilting'] = max(0, 0.96 - descriptors['tolerance_factor']) * 10
+        else:
+            descriptors['octahedral_tilting'] = None
+        
+        # ====================================================================
+        # 2. ЭЛЕКТРОННЫЕ ДЕСКРИПТОРЫ (электроотрицательность, прочность связи)
+        # ====================================================================
+        
+        descriptors['χ_B'] = χ_B
+        descriptors['χ_D'] = χ_D
+        descriptors['χ_A'] = self.χ_A
+        
+        # Средняя электроотрицательность B-сайта
+        if None not in [χ_B, χ_D]:
+            descriptors['χ_avg_B'] = (1 - x) * χ_B + x * χ_D
+        else:
+            descriptors['χ_avg_B'] = None
+        
+        # Разница электроотрицательностей между B-сайтом и A-сайтом
+        if None not in [descriptors['χ_avg_B'], self.χ_A]:
+            descriptors['Δχ'] = abs(descriptors['χ_avg_B'] - self.χ_A)
+        else:
+            descriptors['Δχ'] = None
+        
+        # Градиент Δχ
+        if None not in [χ_B, χ_D, x] and x > 0:
+            descriptors['Δχ_gradient'] = (χ_D - χ_B) / x if χ_D is not None and χ_B is not None else None
+        else:
+            descriptors['Δχ_gradient'] = None
+        
+        # ЭФФЕКТИВНАЯ ЭЛЕКТРООТРИЦАТЕЛЬНОСТЬ ОТНОСИТЕЛЬНО КИСЛОРОДА
+        # Δχ_eff = |χ_avg_B - χ_O| - |χ_A - χ_O|
+        # Оценивает, насколько B-сайт более/менее электроотрицателен относительно кислорода, чем A-сайт
+        if None not in [descriptors['χ_avg_B'], self.χ_A, self.χ_O]:
+            descriptors['Δχ_eff'] = abs(descriptors['χ_avg_B'] - self.χ_O) - abs(self.χ_A - self.χ_O)
+        else:
+            descriptors['Δχ_eff'] = None
+        
+        # Прочность связи по Полингу (квадрат разности электроотрицательностей)
+        if None not in [χ_B, self.χ_O]:
+            descriptors['bond_strength_B'] = (χ_B - self.χ_O) ** 2
+        else:
+            descriptors['bond_strength_B'] = None
+        
+        if None not in [χ_D, self.χ_O]:
+            descriptors['bond_strength_D'] = (χ_D - self.χ_O) ** 2
+        else:
+            descriptors['bond_strength_D'] = None
+        
+        # Дисперсия электроотрицательности на B-сайте
+        if None not in [χ_B, χ_D, x]:
+            descriptors['electronegativity_variance'] = x * (1 - x) * (χ_D - χ_B) ** 2
+        else:
+            descriptors['electronegativity_variance'] = None
+        
+        # ====================================================================
+        # 3. ИОННЫЕ ДЕСКРИПТОРЫ (ионный потенциал, поляризующая способность)
+        # ====================================================================
+        
+        # Ионный потенциал (z/r) - мера поляризующей способности катиона
+        if None not in [z_B, r_B] and r_B is not None and r_B > 0:
+            descriptors['ionic_potential_B'] = z_B / r_B
+        else:
+            descriptors['ionic_potential_B'] = None
+        
+        if None not in [z_D, r_D] and r_D is not None and r_D > 0:
+            descriptors['ionic_potential_D'] = z_D / r_D
+        else:
+            descriptors['ionic_potential_D'] = None
+        
+        # Средний ионный потенциал B-сайта
+        if None not in [descriptors['ionic_potential_B'], descriptors['ionic_potential_D']]:
+            descriptors['ionic_potential_avg'] = (1 - x) * descriptors['ionic_potential_B'] + x * descriptors['ionic_potential_D']
+        else:
+            descriptors['ionic_potential_avg'] = None
+        
+        # Разность ионных потенциалов
+        if None not in [descriptors['ionic_potential_B'], descriptors['ionic_potential_D']]:
+            descriptors['Δ_ionic_potential'] = abs(descriptors['ionic_potential_D'] - descriptors['ionic_potential_B'])
+        else:
+            descriptors['Δ_ionic_potential'] = None
+        
+        # ====================================================================
+        # 4. ОБЪЕМНЫЕ ДЕСКРИПТОРЫ
+        # ====================================================================
+        
+        # Объем катионов и анионов
+        if None not in [self.r_A, r_B, r_D, self.r_O]:
+            term_A = self.r_A ** 3
+            term_B = (1 - x) * (r_B ** 3)
+            term_D = x * (r_D ** 3)
+            term_O = (3 - x/2) * (self.r_O ** 3)
+            descriptors['V_cations'] = PREFACTOR_VOLUME * (term_A + term_B + term_D + term_O)
+        else:
+            descriptors['V_cations'] = None
+        
+        # Молярная масса
+        M_A = ATOMIC_MASSES.get(self.a_element, None)
+        M_B = ATOMIC_MASSES.get(b_element, None)
+        M_D = ATOMIC_MASSES.get(d_element, None)
+        M_O = ATOMIC_MASSES['O']
+        
+        if None not in [M_A, M_B, M_D]:
+            descriptors['molar_mass'] = M_A + (1 - x) * M_B + x * M_D + (3 - x/2) * M_O
+        else:
+            descriptors['molar_mass'] = None
+        
+        # Объем ячейки (из плотности базовой структуры)
+        base_props = MATERIAL_PROPERTIES.get(f"{self.a_element}{b_element}O3", None)
+        if base_props is not None and descriptors['molar_mass'] is not None:
+            density = base_props.get('density', None)
+            if density is not None and density > 0:
+                descriptors['V_cell'] = descriptors['molar_mass'] / (density * AVOGADRO_NUMBER) * 1e24
+            else:
+                descriptors['V_cell'] = None
+        else:
+            descriptors['V_cell'] = None
+        
+        # Свободный объем
+        if None not in [descriptors['V_cell'], descriptors['V_cations']]:
+            descriptors['V_free'] = descriptors['V_cell'] - descriptors['V_cations']
+            descriptors['packing_factor'] = descriptors['V_cations'] / descriptors['V_cell']
+            descriptors['free_volume_fraction'] = descriptors['V_free'] / descriptors['V_cell']
+        else:
+            descriptors['V_free'] = None
+            descriptors['packing_factor'] = None
+            descriptors['free_volume_fraction'] = None
+        
+        # ====================================================================
+        # 5. ТЕРМОДИНАМИЧЕСКИЕ ДЕСКРИПТОРЫ
+        # ====================================================================
+        
+        # Энергия образования
+        if base_props is not None:
+            E_form_D = {
+                'Gd': -2.8, 'Sm': -2.7, 'Y': -2.9, 'In': -2.5, 'Sc': -3.0,
+                'Dy': -2.8, 'Ho': -2.8, 'Yb': -2.7, 'Eu': -2.6, 'Nd': -2.6,
+                'La': -2.5, 'Pr': -2.6, 'Tb': -2.7, 'Er': -2.8, 'Tm': -2.8, 'Lu': -2.9
+            }.get(d_element, -2.7)
+            E_form_base = base_props.get('E_form', 0)
+            descriptors['E_form'] = (1 - x) * E_form_base + x * E_form_D
+        else:
+            descriptors['E_form'] = None
+        
+        # Ширина запрещенной зоны
+        if base_props is not None:
+            band_gap_base = base_props.get('band_gap', None)
+            if band_gap_base is not None:
+                band_gap_D = {
+                    'Gd': 5.2, 'Sm': 4.8, 'Y': 5.5, 'In': 3.7, 'Sc': 6.0,
+                    'Dy': 5.0, 'Ho': 5.1, 'Yb': 4.5, 'Eu': 4.6, 'Nd': 4.7,
+                    'La': 5.6, 'Pr': 4.9, 'Tb': 5.0, 'Er': 5.2, 'Tm': 5.3, 'Lu': 5.8
+                }.get(d_element, 5.0)
+                descriptors['band_gap'] = (1 - x) * band_gap_base + x * band_gap_D
+            else:
+                descriptors['band_gap'] = None
+        else:
+            descriptors['band_gap'] = None
+        
+        # Энергия деформации решетки (уже есть, но добавим еще квадратичную форму)
+        if None not in [r_B, r_D, x]:
+            descriptors['lattice_strain_energy'] = (r_D - r_B) ** 2 * (1 - x) * x
+        else:
+            descriptors['lattice_strain_energy'] = None
+        
+        # Концентрация кислородных вакансий
+        descriptors['oxygen_vacancy_conc'] = x / 2 if x is not None else None
+        
+        # ====================================================================
+        # 6. ГИБРИДНЫЕ ДЕСКРИПТОРЫ (комбинации базовых параметров)
+        # ====================================================================
+        
+        # t * (1 + dr/r_B) - комбинация геометрии и мисфита
+        if None not in [descriptors['tolerance_factor'], descriptors['dr_rel']]:
+            descriptors['t_dr_hybrid'] = descriptors['tolerance_factor'] * (1 + descriptors['dr_rel'])
+        else:
+            descriptors['t_dr_hybrid'] = None
+        
+        # Δχ * dr - произведение (часто дает хорошую разделимость)
+        if None not in [descriptors['Δχ'], descriptors['dr']]:
+            descriptors['Δχ_dr_hybrid'] = descriptors['Δχ'] * descriptors['dr']
+        else:
+            descriptors['Δχ_dr_hybrid'] = None
+        
+        # ε_strain / t - нормализованная энергия деформации
+        if None not in [descriptors['lattice_strain_energy'], descriptors['tolerance_factor']] and descriptors['tolerance_factor'] != 0:
+            descriptors['strain_t_ratio'] = descriptors['lattice_strain_energy'] / descriptors['tolerance_factor']
+        else:
+            descriptors['strain_t_ratio'] = None
+        
+        # oxygen_vacancy_conc * free_volume_fraction - эффективная подвижность вакансий
+        if None not in [descriptors['oxygen_vacancy_conc'], descriptors['free_volume_fraction']]:
+            descriptors['vacancy_mobility_proxy'] = descriptors['oxygen_vacancy_conc'] * descriptors['free_volume_fraction']
+        else:
+            descriptors['vacancy_mobility_proxy'] = None
+        
+        return descriptors
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -425,10 +791,11 @@ def process_x_boundary(value, inv_end=None):
         return None, 'none', str(value)
 
 # ============================================================================
-# ФУНКЦИЯ РАСЧЕТА ВСЕХ ДЕСКРИПТОРОВ (РАСШИРЕННАЯ)
+# ФУНКЦИЯ РАСЧЕТА ВСЕХ ДЕСКРИПТОРОВ (ОБНОВЛЕННАЯ С НОВЫМ КЛАССОМ)
 # ============================================================================
+@st.cache_data
 def calculate_descriptors(row, aggregate_lower_bounds=False):
-    """Расчет всех дескрипторов для одной строки (расширенная версия)
+    """Расчет всех дескрипторов для одной строки (обновленная версия с новыми дескрипторами)
     
     Parameters
     ----------
@@ -448,7 +815,16 @@ def calculate_descriptors(row, aggregate_lower_bounds=False):
             'V_cations': None, 'V_cell': None, 'V_free': None,
             'packing_factor': None, 'free_volume_fraction': None,
             'E_form': None, 'band_gap': None, 'lattice_strain_energy': None,
-            'oxygen_vacancy_conc': None, 'molar_mass': None
+            'oxygen_vacancy_conc': None, 'molar_mass': None,
+            # Новые дескрипторы
+            'size_misfit': None, 'elastic_misfit': None, 't0': None,
+            'Δχ_eff': None, 'bond_strength_B': None, 'bond_strength_D': None,
+            'electronegativity_variance': None, 'ionic_potential_B': None,
+            'ionic_potential_D': None, 'ionic_potential_avg': None,
+            'Δ_ionic_potential': None, 'octahedral_tilting': None,
+            't_dr_hybrid': None, 'Δχ_dr_hybrid': None, 'strain_t_ratio': None,
+            'vacancy_mobility_proxy': None, 'log_x_boundary': None,
+            'solubility_energy_proxy': None
         }
     
     A = row.get('A_element', 'Ba')
@@ -465,11 +841,10 @@ def calculate_descriptors(row, aggregate_lower_bounds=False):
         if pd.isna(x):
             x = 0
     
-    # Получаем радиусы
-    r_A = IONIC_RADII.get((A, 2, 12), None)
-    r_O = IONIC_RADII.get(('O', -2, 6), None)
+    # Используем новый класс для расчета дескрипторов
+    calculator = PerovskiteDescriptorCalculator(a_element=A)
     
-    # Для B и D определяем заряды по умолчанию
+    # Получаем радиусы и электроотрицательности
     r_B = IONIC_RADII.get((B, 4, 6), None)
     r_D = IONIC_RADII.get((D, 3, 6), None)
     
@@ -488,86 +863,31 @@ def calculate_descriptors(row, aggregate_lower_bounds=False):
             if r_D:
                 break
     
-    # Получаем электроотрицательности
-    χ_A = get_electronegativity(A)
     χ_B = get_electronegativity(B)
     χ_D = get_electronegativity(D)
     
-    # Получаем свойства базовой структуры
-    base_props = get_base_properties(A, B)
+    # Расчет всех дескрипторов через класс
+    descriptors = calculator.calculate_descriptors(B, D, x, r_B, r_D, χ_B, χ_D)
     
-    # Расчеты
-    dr = abs(r_D - r_B) if None not in [r_B, r_D] else None
-    dr_rel = dr / r_B if (dr is not None and r_B is not None and r_B != 0) else None
+    # Логарифмическая целевая переменная
+    if x is not None and x > 0:
+        epsilon = 1e-6
+        descriptors['log_x_boundary'] = np.log10(x + epsilon)
+        descriptors['solubility_energy_proxy'] = -np.log(x + epsilon)
+    else:
+        descriptors['log_x_boundary'] = None
+        descriptors['solubility_energy_proxy'] = None
     
-    r_avg_B = (1 - x) * r_B + x * r_D if None not in [r_B, r_D] else None
+    # Добавляем информацию о типе x_boundary
+    descriptors['x_boundary_original'] = x
+    descriptors['x_boundary_type'] = row.get('x_boundary_type', 'exact')
     
-    tolerance_factor = calculate_tolerance_factor(r_A, r_avg_B, r_O) if None not in [r_A, r_avg_B, r_O] else None
-    
-    t_gradient = calculate_t_gradient(r_B, r_D, x, r_A, r_O) if None not in [r_B, r_D, r_A, r_O] and x > 0 else None
-    
-    t_range = (calculate_tolerance_factor(r_A, r_B, r_O) - tolerance_factor) if None not in [r_A, r_B, r_O, tolerance_factor] else None
-    
-    χ_avg_B = (1 - x) * χ_B + x * χ_D if None not in [χ_B, χ_D] else None
-    
-    Δχ = abs(χ_avg_B - χ_A) if None not in [χ_avg_B, χ_A] else None
-    
-    Δχ_gradient = (χ_avg_B - χ_B) / x if (χ_avg_B is not None and χ_B is not None and x > 0) else None
-    
-    # Объемные характеристики
-    V_cations = calculate_volume_cations(r_A, r_B, r_D, r_O, x) if None not in [r_A, r_B, r_D, r_O] else None
-    
-    molar_mass = calculate_molar_mass(A, B, D, x)
-    
-    # Используем плотность из базовой структуры, если доступна
-    density = base_props.get('density', None) if base_props is not None else None
-    V_cell = calculate_cell_volume(molar_mass, density) if None not in [molar_mass, density] else None
-    
-    V_free = calculate_free_volume(V_cell, V_cations) if None not in [V_cell, V_cations] else None
-    
-    packing_factor = calculate_packing_factor(V_cations, V_cell) if None not in [V_cations, V_cell] else None
-    
-    free_volume_fraction = calculate_free_volume_fraction(V_free, V_cell) if None not in [V_free, V_cell] else None
-    
-    # Термодинамические характеристики
-    E_form = calculate_formation_energy(base_props, D, x) if base_props is not None else None
-    
-    band_gap = calculate_band_gap(base_props, D, x) if base_props is not None else None
-    
-    lattice_strain_energy = calculate_lattice_strain_energy(r_B, r_D, x) if None not in [r_B, r_D] else None
-    
-    oxygen_vacancy_conc = x / 2 if x is not None else None
-    
-    return {
-        'r_B': r_B,
-        'r_D': r_D,
-        'dr': dr,
-        'dr_rel': dr_rel,
-        'r_avg_B': r_avg_B,
-        'tolerance_factor': tolerance_factor,
-        't_gradient': t_gradient,
-        't_range': t_range,
-        'χ_B': χ_B,
-        'χ_D': χ_D,
-        'χ_A': χ_A,
-        'χ_avg_B': χ_avg_B,
-        'Δχ': Δχ,
-        'Δχ_gradient': Δχ_gradient,
-        'V_cations': V_cations,
-        'V_cell': V_cell,
-        'V_free': V_free,
-        'packing_factor': packing_factor,
-        'free_volume_fraction': free_volume_fraction,
-        'E_form': E_form,
-        'band_gap': band_gap,
-        'lattice_strain_energy': lattice_strain_energy,
-        'oxygen_vacancy_conc': oxygen_vacancy_conc,
-        'molar_mass': molar_mass
-    }
+    return descriptors
 
 # ============================================================================
 # ФУНКЦИЯ ПРОЦЕССИНГА ДАННЫХ (РАСШИРЕННАЯ)
 # ============================================================================
+@st.cache_data
 def process_data(df, aggregate_lower_bounds=False):
     """Основная функция обработки данных (расширенная версия)
     
@@ -747,7 +1067,7 @@ def process_data(df, aggregate_lower_bounds=False):
         # Удаляем временные колонки
         df_processed.drop(columns=['x_boundary_aggregated', 'x_boundary_aggregated_max'], inplace=True)
     
-    # Рассчитываем дескрипторы для каждой строки (расширенная версия)
+    # Рассчитываем дескрипторы для каждой строки (расширенная версия с новым классом)
     descriptors_list = []
     for idx, row in df_processed.iterrows():
         desc = calculate_descriptors(row, aggregate_lower_bounds)
@@ -757,6 +1077,12 @@ def process_data(df, aggregate_lower_bounds=False):
     
     # Объединяем с исходными данными
     result = pd.concat([df_processed, descriptors_df], axis=1)
+    
+    # Добавляем колонку system для удобства
+    result['system'] = result.apply(
+        lambda row: f"{row.get('A_element', 'Ba')}{row['B_element']}O3 + {row.get('x_boundary_value', 0):.2f}{row['D_element']}",
+        axis=1
+    )
     
     # Дополнительные параметры
     if 'x_boundary_value' in result.columns and 'x_inv_end' in result.columns:
@@ -781,6 +1107,7 @@ def process_data(df, aggregate_lower_bounds=False):
 # ============================================================================
 # ФУНКЦИИ ДЛЯ РАСЧЕТА СТАТИСТИКИ
 # ============================================================================
+@st.cache_data
 def calculate_correlations(df, features, include_lower_bounds=True, aggregate_lower_bounds=False):
     """Расчет корреляций Пирсона и Спирмена с p-value"""
     corr_data = []
@@ -815,6 +1142,7 @@ def calculate_correlations(df, features, include_lower_bounds=True, aggregate_lo
                     continue
     return pd.DataFrame(corr_data)
 
+@st.cache_data
 def calculate_t_series(row, x_points=50):
     """Рассчитать tolerance factor для ряда x"""
     if pd.isna(row.get('r_B')) or pd.isna(row.get('r_D')):
@@ -835,15 +1163,29 @@ def calculate_t_series(row, x_points=50):
     
     return x_vals, t_vals
 
-def feature_importance_analysis(df):
-    """Random Forest анализ важности признаков"""
-    plot_df = df.dropna(subset=['x_boundary_value', 'dr', 'tolerance_factor', 'B_element'])
+@st.cache_data
+def feature_importance_analysis(df, selected_features=None):
+    """Random Forest анализ важности признаков с возможностью выбора признаков"""
+    if selected_features is None:
+        selected_features = ['dr', 'tolerance_factor', 'size_misfit', 'elastic_misfit',
+                            'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
+                            'lattice_strain_energy', 'oxygen_vacancy_conc']
+    
+    available_features = [f for f in selected_features if f in df.columns]
+    
+    if len(available_features) < 2:
+        return None, None
+    
+    plot_df = df.dropna(subset=['x_boundary_value'] + available_features)
     
     if len(plot_df) < 10:
         return None, None
     
-    X = pd.get_dummies(plot_df[['dr', 'tolerance_factor', 'B_element']],
-                       columns=['B_element'])
+    X = plot_df[available_features].copy()
+    # Добавляем one-hot кодирование для B_element
+    if 'B_element' in plot_df.columns:
+        X = pd.concat([X, pd.get_dummies(plot_df['B_element'], prefix='B')], axis=1)
+    
     y = plot_df['x_boundary_value']
     
     rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
@@ -858,6 +1200,92 @@ def feature_importance_analysis(df):
     
     return importance_df, r2
 
+@st.cache_data
+def compare_ml_models(df, selected_features=None, target='x_boundary_value'):
+    """Сравнение нескольких моделей ML с кросс-валидацией"""
+    if selected_features is None:
+        selected_features = ['dr', 'tolerance_factor', 'size_misfit', 'elastic_misfit',
+                            'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
+                            'lattice_strain_energy', 'oxygen_vacancy_conc']
+    
+    available_features = [f for f in selected_features if f in df.columns]
+    
+    if len(available_features) < 2:
+        return None, None, None
+    
+    plot_df = df.dropna(subset=[target] + available_features)
+    
+    if len(plot_df) < 10:
+        return None, None, None
+    
+    X = plot_df[available_features].copy()
+    if 'B_element' in plot_df.columns:
+        X = pd.concat([X, pd.get_dummies(plot_df['B_element'], prefix='B')], axis=1)
+    
+    y = plot_df[target]
+    
+    # Определяем модели
+    models = {
+        'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
+        'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, random_state=42),
+        'XGBoost': xgb.XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
+    }
+    
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    results = []
+    
+    for name, model in models.items():
+        scores = cross_val_score(model, X, y, cv=cv, scoring='r2')
+        mae_scores = -cross_val_score(model, X, y, cv=cv, scoring='neg_mean_absolute_error')
+        
+        model.fit(X, y)
+        train_r2 = model.score(X, y)
+        
+        results.append({
+            'Model': name,
+            'CV R² (mean)': f'{scores.mean():.3f}',
+            'CV R² (std)': f'{scores.std():.3f}',
+            'Train R²': f'{train_r2:.3f}',
+            'CV MAE': f'{mae_scores.mean():.3f}',
+            'CV MAE (std)': f'{mae_scores.std():.3f}'
+        })
+    
+    return pd.DataFrame(results), models, X, y
+
+@st.cache_data
+def calculate_shap_values(model, X, feature_names):
+    """Расчет SHAP values для модели"""
+    try:
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+        return explainer, shap_values
+    except Exception as e:
+        st.warning(f"SHAP calculation failed: {e}")
+        return None, None
+
+@st.cache_data
+def perform_clustering(df, features, eps=0.5, min_samples=3):
+    """DBSCAN кластеризация для выделения семейств систем"""
+    available_features = [f for f in features if f in df.columns]
+    
+    if len(available_features) < 2:
+        return None, None
+    
+    plot_df = df.dropna(subset=available_features + ['x_boundary_value'])
+    
+    if len(plot_df) < 5:
+        return None, None
+    
+    X = plot_df[available_features].copy()
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    clustering = DBSCAN(eps=eps, min_samples=min_samples)
+    labels = clustering.fit_predict(X_scaled)
+    
+    return labels, plot_df
+
+@st.cache_data
 def get_dopant_statistics(df, include_lower_bounds=True, aggregate_lower_bounds=False):
     """Получение статистики по допантам с учетом типа значений
     
@@ -930,382 +1358,455 @@ def get_dopant_statistics(df, include_lower_bounds=True, aggregate_lower_bounds=
         return pd.DataFrame(stats_list).sort_values('Median', ascending=False)
 
 # ============================================================================
-# НОВЫЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (ДЛЯ ВКЛАДКИ 2)
+# НОВЫЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (SHAP, PDP, CLUSTERING)
 # ============================================================================
-def plot_solubility_vs_delta_chi(df, ax, aggregate_mode=False):
-    """График 2a: x(boundary) vs Δχ (разница электроотрицательностей)"""
-    valid = df.dropna(subset=['Δχ', 'x_boundary_value'])
-    
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for Δχ analysis',
-                ha='center', va='center', transform=ax.transAxes)
-        return ax
-    
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'Δχ'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'Δχ'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'Δχ'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'Δχ'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
-    
-    ax.set_xlabel('Electronegativity Difference Δχ = |χ_avg_B - χ_A|')
-    ax.set_ylabel('x(boundary)')
-    if aggregate_mode:
-        ax.set_title('Solubility Limit vs Electronegativity Difference\n(≥ indicates lower bound estimate)')
-    else:
-        ax.set_title('Solubility Limit vs Electronegativity Difference\n(Hollow markers = lower bound estimates)')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
+def plot_shap_summary(shap_values, X, feature_names, ax):
+    """График SHAP summary"""
+    shap.summary_plot(shap_values, X, feature_names=feature_names, show=False)
+    plt.title('SHAP Feature Importance')
     return ax
 
-def plot_solubility_vs_avg_chi(df, ax, aggregate_mode=False):
-    """График 2b: x(boundary) vs χ_avg_B (средняя электроотрицательность B-сайта)"""
-    valid = df.dropna(subset=['χ_avg_B', 'x_boundary_value'])
-    
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for χ_avg_B analysis',
-                ha='center', va='center', transform=ax.transAxes)
-        return ax
-    
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'χ_avg_B'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'χ_avg_B'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'χ_avg_B'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'χ_avg_B'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
-    
-    ax.set_xlabel('Average B-site Electronegativity χ_avg_B = (1-x)·χ_B + x·χ_D')
-    ax.set_ylabel('x(boundary)')
-    if aggregate_mode:
-        ax.set_title('Solubility Limit vs Average B-site Electronegativity\n(≥ indicates lower bound estimate)')
-    else:
-        ax.set_title('Solubility Limit vs Average B-site Electronegativity\n(Hollow markers = lower bound estimates)')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
+def plot_shap_force(explainer, shap_values, X, idx, ax):
+    """График SHAP force plot для одного предсказания"""
+    shap.force_plot(explainer.expected_value, shap_values[idx,:], X.iloc[idx,:], 
+                    feature_names=X.columns.tolist(), matplotlib=True, show=False)
     return ax
 
-def plot_solubility_vs_avg_radius(df, ax, aggregate_mode=False):
-    """График 2c: x(boundary) vs r_avg_B (средний ионный радиус B-сайта)"""
-    valid = df.dropna(subset=['r_avg_B', 'x_boundary_value'])
-    
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for r_avg_B analysis',
-                ha='center', va='center', transform=ax.transAxes)
+def plot_partial_dependence(model, X, feature_name, ax, grid_resolution=50):
+    """Partial Dependence Plot для одного признака"""
+    if feature_name not in X.columns:
+        ax.text(0.5, 0.5, f'{feature_name} not in features', ha='center', va='center')
         return ax
     
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'r_avg_B'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'r_avg_B'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'r_avg_B'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'r_avg_B'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
+    feature_values = np.linspace(X[feature_name].min(), X[feature_name].max(), grid_resolution)
+    pdp_values = []
     
-    ax.set_xlabel('Average B-site Ionic Radius r_avg_B = (1-x)·r_B + x·r_D (Å)')
-    ax.set_ylabel('x(boundary)')
-    if aggregate_mode:
-        ax.set_title('Solubility Limit vs Average B-site Radius\n(≥ indicates lower bound estimate)')
-    else:
-        ax.set_title('Solubility Limit vs Average B-site Radius\n(Hollow markers = lower bound estimates)')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
+    X_temp = X.copy()
+    for val in feature_values:
+        X_temp[feature_name] = val
+        pred = model.predict(X_temp)
+        pdp_values.append(pred.mean())
+    
+    ax.plot(feature_values, pdp_values, 'b-', linewidth=2)
+    ax.fill_between(feature_values, np.array(pdp_values) - np.std(pdp_values), 
+                     np.array(pdp_values) + np.std(pdp_values), alpha=0.2)
+    ax.set_xlabel(feature_name)
+    ax.set_ylabel('Partial Dependence')
+    ax.set_title(f'PDP: {feature_name}')
+    ax.grid(True, alpha=0.3)
     return ax
 
-def plot_solubility_vs_formation_energy(df, ax, aggregate_mode=False):
-    """График 2d: x(boundary) vs E_form (энергия образования)"""
-    valid = df.dropna(subset=['E_form', 'x_boundary_value'])
-    
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for formation energy analysis',
-                ha='center', va='center', transform=ax.transAxes)
+def plot_ice_curves(model, X, feature_name, ax, n_ice=20, grid_resolution=30):
+    """Individual Conditional Expectation (ICE) curves"""
+    if feature_name not in X.columns:
+        ax.text(0.5, 0.5, f'{feature_name} not in features', ha='center', va='center')
         return ax
     
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'E_form'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'E_form'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'E_form'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'E_form'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
+    feature_values = np.linspace(X[feature_name].min(), X[feature_name].max(), grid_resolution)
     
-    ax.set_xlabel('Formation Energy E_form (eV/atom)')
-    ax.set_ylabel('x(boundary)')
-    if aggregate_mode:
-        ax.set_title('Solubility Limit vs Formation Energy\n(≥ indicates lower bound estimate)')
-    else:
-        ax.set_title('Solubility Limit vs Formation Energy\n(Hollow markers = lower bound estimates)')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
+    # Выбираем случайные наблюдения для ICE
+    sample_idx = np.random.choice(len(X), min(n_ice, len(X)), replace=False)
+    
+    for idx in sample_idx:
+        ice_values = []
+        X_temp = X.iloc[[idx]].copy()
+        for val in feature_values:
+            X_temp[feature_name] = val
+            pred = model.predict(X_temp)
+            ice_values.append(pred[0])
+        ax.plot(feature_values, ice_values, 'gray', alpha=0.3, linewidth=0.8)
+    
+    # Добавляем PDP поверх
+    pdp_values = []
+    X_temp = X.copy()
+    for val in feature_values:
+        X_temp[feature_name] = val
+        pred = model.predict(X_temp)
+        pdp_values.append(pred.mean())
+    ax.plot(feature_values, pdp_values, 'b-', linewidth=2, label='PDP')
+    
+    ax.set_xlabel(feature_name)
+    ax.set_ylabel('Predicted x_boundary')
+    ax.set_title(f'ICE Curves + PDP: {feature_name}')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     return ax
 
-def plot_solubility_vs_strain_energy(df, ax, aggregate_mode=False):
-    """График 2e: x(boundary) vs lattice_strain_energy (энергия деформации решетки)"""
-    valid = df.dropna(subset=['lattice_strain_energy', 'x_boundary_value'])
+def plot_contour_t_dr(df, ax, aggregate_mode=False):
+    """2D contour plot: x_boundary как функция от t и dr"""
+    valid = df.dropna(subset=['tolerance_factor', 'dr', 'x_boundary_value'])
     
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for lattice strain energy analysis',
-                ha='center', va='center', transform=ax.transAxes)
+    if len(valid) < 10:
+        ax.text(0.5, 0.5, 'Insufficient data for contour plot', ha='center', va='center')
         return ax
     
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'lattice_strain_energy'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'lattice_strain_energy'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'lattice_strain_energy'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'lattice_strain_energy'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
+    # Создаем сетку
+    ti = np.linspace(valid['tolerance_factor'].min(), valid['tolerance_factor'].max(), 50)
+    dri = np.linspace(valid['dr'].min(), valid['dr'].max(), 50)
+    T, DR = np.meshgrid(ti, dri)
     
-    ax.set_xlabel('Lattice Strain Energy ε_strain = (Δr)²·(1-x)·x (arb. units)')
-    ax.set_ylabel('x(boundary)')
+    # Интерполяция
+    points = valid[['tolerance_factor', 'dr']].values
+    values = valid['x_boundary_value'].values
+    Z = griddata(points, values, (T, DR), method='cubic')
+    
+    # Контурный график
+    contour = ax.contourf(T, DR, Z, levels=20, cmap='viridis', alpha=0.8)
+    ax.contour(T, DR, Z, levels=10, colors='black', linewidths=0.5, alpha=0.5)
+    
+    # Добавляем точки данных
     if aggregate_mode:
-        ax.set_title('Solubility Limit vs Lattice Strain Energy\n(≥ indicates lower bound estimate)')
+        ax.scatter(valid['tolerance_factor'], valid['dr'], c='red', s=20, alpha=0.5, edgecolors='black')
     else:
-        ax.set_title('Solubility Limit vs Lattice Strain Energy\n(Hollow markers = lower bound estimates)')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
+        exact = valid[valid['x_boundary_type'] == 'exact']
+        lower = valid[valid['x_boundary_type'] == 'lower_bound']
+        ax.scatter(exact['tolerance_factor'], exact['dr'], c='red', s=30, alpha=0.7, edgecolors='black', label='Exact')
+        ax.scatter(lower['tolerance_factor'], lower['dr'], c='orange', s=30, alpha=0.3, edgecolors='black', marker='s', label='Lower bound')
+    
+    ax.axvline(x=1.0, color='white', linestyle='--', alpha=0.5, linewidth=1.5)
+    ax.set_xlabel('Tolerance Factor (t)')
+    ax.set_ylabel('Δr (Å)')
+    ax.set_title('Solubility Limit as Function of t and Δr')
+    if not aggregate_mode:
+        ax.legend()
+    
+    plt.colorbar(contour, ax=ax, label='x(boundary)')
     return ax
 
-def plot_solubility_vs_vacancy_conc(df, ax, aggregate_mode=False):
-    """График 2f: x(boundary) vs oxygen_vacancy_conc (концентрация кислородных вакансий)"""
-    valid = df.dropna(subset=['oxygen_vacancy_conc', 'x_boundary_value'])
+def plot_parallel_coordinates(df, ax, features=None, target='x_boundary_value'):
+    """Parallel Coordinates Plot для многомерного анализа"""
+    if features is None:
+        features = ['dr', 'tolerance_factor', 'size_misfit', 'Δχ', 'free_volume_fraction']
     
-    if len(valid) < 3:
-        ax.text(0.5, 0.5, 'Insufficient data for oxygen vacancy analysis',
-                ha='center', va='center', transform=ax.transAxes)
+    available_features = [f for f in features if f in df.columns]
+    
+    if len(available_features) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for parallel coordinates', ha='center', va='center')
         return ax
     
-    for b_element in valid['B_element'].unique():
-        mask = valid['B_element'] == b_element
-        color = B_COLORS.get(b_element, B_COLORS['default'])
-        
-        if aggregate_mode:
-            data_mask = mask & (valid['x_boundary_value'].notna())
-            if data_mask.any():
-                ax.scatter(
-                    valid.loc[data_mask, 'oxygen_vacancy_conc'],
-                    valid.loc[data_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element}"
-                )
-                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
-                for idx in valid[lower_mask].index:
-                    ax.annotate('≥', 
-                               (valid.loc[idx, 'oxygen_vacancy_conc'], valid.loc[idx, 'x_boundary_value']),
-                               textcoords="offset points", xytext=(5, 5), 
-                               ha='center', fontsize=8, fontweight='bold')
-        else:
-            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
-            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
-            
-            if exact_mask.any():
-                ax.scatter(
-                    valid.loc[exact_mask, 'oxygen_vacancy_conc'],
-                    valid.loc[exact_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.9,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (exact)"
-                )
-            
-            if lower_mask.any():
-                ax.scatter(
-                    valid.loc[lower_mask, 'oxygen_vacancy_conc'],
-                    valid.loc[lower_mask, 'x_boundary_value'],
-                    color=color, s=100, alpha=0.3,
-                    edgecolors='black', linewidth=0.5,
-                    label=f"{b_element} (≥)",
-                    marker='s'
-                )
+    plot_df = df.dropna(subset=available_features + [target])
     
-    ax.set_xlabel('Oxygen Vacancy Concentration [V_O] = x/2 (per formula unit)')
+    if len(plot_df) < 10:
+        ax.text(0.5, 0.5, 'Insufficient data for parallel coordinates', ha='center', va='center')
+        return ax
+    
+    # Нормализуем данные
+    from sklearn.preprocessing import MinMaxScaler
+    scaler = MinMaxScaler()
+    plot_df_norm = plot_df[available_features].copy()
+    plot_df_norm_scaled = scaler.fit_transform(plot_df_norm)
+    
+    # Создаем параллельные координаты
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Цветовая кодировка по x_boundary
+    cmap = plt.cm.viridis
+    norm = plt.Normalize(plot_df[target].min(), plot_df[target].max())
+    
+    for i, (idx, row) in enumerate(plot_df.iterrows()):
+        values = plot_df_norm_scaled[i]
+        color = cmap(norm(row[target]))
+        ax.plot(range(len(available_features)), values, color=color, alpha=0.5, linewidth=1)
+    
+    ax.set_xticks(range(len(available_features)))
+    ax.set_xticklabels(available_features, rotation=45, ha='right')
+    ax.set_ylabel('Normalized Value')
+    ax.set_title(f'Parallel Coordinates Plot (color = {target})')
+    ax.grid(True, alpha=0.3)
+    
+    # Добавляем colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label=target)
+    
+    return fig
+
+def plot_violin_by_impurity(df, feature, ax, aggregate_mode=False):
+    """Violin plot с разделением по наличию примесей"""
+    valid = df.dropna(subset=[feature, 'x_boundary_value', 'has_impurity'])
+    
+    if len(valid) < 10:
+        ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
+        return ax
+    
+    data_no_imp = valid[~valid['has_impurity']]['x_boundary_value']
+    data_imp = valid[valid['has_impurity']]['x_boundary_value']
+    
+    violin_data = [data_no_imp, data_imp]
+    labels = ['No impurities', 'With impurities']
+    colors = ['#4DAF4A', '#E41A1C']
+    
+    parts = ax.violinplot(violin_data, positions=[1, 2], showmeans=False, showmedians=True, widths=0.7)
+    
+    for i, pc in enumerate(parts['bodies']):
+        pc.set_facecolor(colors[i])
+        pc.set_alpha(0.6)
+        pc.set_edgecolor('black')
+        pc.set_linewidth(1)
+    
+    parts['cmedians'].set_color('red')
+    parts['cmedians'].set_linewidth(2)
+    
+    # Добавляем точки
+    for i, data in enumerate(violin_data):
+        x_pos = np.random.normal(i + 1, 0.05, len(data))
+        ax.scatter(x_pos, data, color='black', s=20, alpha=0.3)
+    
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(labels)
     ax.set_ylabel('x(boundary)')
-    if aggregate_mode:
-        ax.set_title('Solubility Limit vs Oxygen Vacancy Concentration\n(≥ indicates lower bound estimate)')
-    else:
-        ax.set_title('Solubility Limit vs Oxygen Vacancy Concentration\n(Hollow markers = lower bound estimates)')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_title(f'Solubility Distribution: {feature}')
+    ax.grid(True, alpha=0.3, axis='y')
+    
     return ax
+
+def plot_pca_loadings(df, features=None, ax=None):
+    """PCA loadings plot (correlation circle)"""
+    if features is None:
+        features = ['dr', 'tolerance_factor', 'size_misfit', 'elastic_misfit', 
+                   'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction']
+    
+    available_features = [f for f in features if f in df.columns]
+    
+    if len(available_features) < 3:
+        if ax is not None:
+            ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
+        return None
+    
+    plot_df = df[available_features].dropna()
+    
+    if len(plot_df) < 10:
+        if ax is not None:
+            ax.text(0.5, 0.5, 'Insufficient data', ha='center', va='center')
+        return None
+    
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(plot_df)
+    
+    pca = PCA(n_components=2)
+    X_pca = pca.fit_transform(X_scaled)
+    
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 10))
+    else:
+        fig = ax.get_figure()
+    
+    # Круг корреляций
+    circle = plt.Circle((0, 0), 1, color='gray', fill=False, linestyle='--', alpha=0.5)
+    ax.add_artist(circle)
+    
+    # Стрелки нагрузок
+    for i, feature in enumerate(available_features):
+        comp1 = pca.components_[0, i]
+        comp2 = pca.components_[1, i]
+        ax.arrow(0, 0, comp1, comp2, head_width=0.05, head_length=0.05, fc='red', ec='red', alpha=0.7)
+        ax.text(comp1 * 1.05, comp2 * 1.05, feature, fontsize=10, ha='center')
+    
+    ax.set_xlim(-1.1, 1.1)
+    ax.set_ylim(-1.1, 1.1)
+    ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+    ax.axvline(x=0, color='gray', linestyle='-', alpha=0.3)
+    ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%})')
+    ax.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%})')
+    ax.set_title('PCA Loadings Plot (Correlation Circle)')
+    ax.set_aspect('equal')
+    
+    return fig
+
+def plot_3d_interactive(df, x='tolerance_factor', y='dr', z='x_boundary_value', color='size_misfit'):
+    """Интерактивный 3D график с plotly"""
+    available_x = x if x in df.columns else df.select_dtypes(include=[np.number]).columns[0]
+    available_y = y if y in df.columns else df.select_dtypes(include=[np.number]).columns[1]
+    available_z = z if z in df.columns else 'x_boundary_value'
+    available_color = color if color in df.columns else df.select_dtypes(include=[np.number]).columns[2]
+    
+    plot_df = df.dropna(subset=[available_x, available_y, available_z, available_color])
+    
+    if len(plot_df) < 3:
+        fig = go.Figure()
+        fig.add_annotation(text="Insufficient data for 3D plot", xref="paper", yref="paper",
+                          x=0.5, y=0.5, showarrow=False)
+        return fig
+    
+    fig = go.Figure(data=[go.Scatter3d(
+        x=plot_df[available_x],
+        y=plot_df[available_y],
+        z=plot_df[available_z],
+        mode='markers',
+        marker=dict(
+            size=plot_df[available_z] * 50 + 5,
+            color=plot_df[available_color],
+            colorscale='Viridis',
+            colorbar=dict(title=available_color),
+            showscale=True,
+            line=dict(width=0.5, color='black')
+        ),
+        text=plot_df['system'] if 'system' in plot_df.columns else plot_df.index,
+        hovertemplate='<b>%{text}</b><br>' +
+                      f'{available_x}: %{{x:.3f}}<br>' +
+                      f'{available_y}: %{{y:.3f}}<br>' +
+                      f'{available_z}: %{{z:.3f}}<br>' +
+                      f'{available_color}: %{{marker.color:.3f}}<extra></extra>'
+    )])
+    
+    fig.update_layout(
+        title='3D Stability Phase Diagram',
+        scene=dict(
+            xaxis_title=available_x,
+            yaxis_title=available_y,
+            zaxis_title=available_z
+        ),
+        width=800,
+        height=700
+    )
+    
+    return fig
+
+def plot_sankey_diagram(df, max_systems=20):
+    """Sankey diagram для потока данных от B-site к допанту к примесям"""
+    if 'B_element' not in df.columns or 'D_element' not in df.columns:
+        fig = go.Figure()
+        fig.add_annotation(text="Required columns missing", xref="paper", yref="paper",
+                          x=0.5, y=0.5, showarrow=False)
+        return fig
+    
+    # Агрегируем данные
+    df_agg = df.groupby(['B_element', 'D_element', 'has_impurity']).size().reset_index(name='count')
+    
+    # Ограничиваем количество систем для читаемости
+    if len(df_agg) > max_systems:
+        df_agg = df_agg.nlargest(max_systems, 'count')
+    
+    # Создаем узлы
+    nodes = []
+    node_indices = {}
+    
+    # B-site узлы
+    b_sites = df_agg['B_element'].unique()
+    for b in b_sites:
+        node_indices[f'B_{b}'] = len(nodes)
+        nodes.append(f'B: {b}')
+    
+    # D-site узлы
+    d_sites = df_agg['D_element'].unique()
+    for d in d_sites:
+        node_indices[f'D_{d}'] = len(nodes)
+        nodes.append(f'D: {d}')
+    
+    # Impurity узлы
+    node_indices['No impurity'] = len(nodes)
+    nodes.append('No impurity')
+    node_indices['With impurity'] = len(nodes)
+    nodes.append('With impurity')
+    
+    # Создаем связи
+    links = []
+    
+    for _, row in df_agg.iterrows():
+        b_idx = node_indices[f'B_{row["B_element"]}']
+        d_idx = node_indices[f'D_{row["D_element"]}']
+        
+        # Связь B -> D
+        links.append({
+            'source': b_idx,
+            'target': d_idx,
+            'value': row['count']
+        })
+        
+        # Связь D -> impurity status
+        imp_idx = node_indices['With impurity'] if row['has_impurity'] else node_indices['No impurity']
+        links.append({
+            'source': d_idx,
+            'target': imp_idx,
+            'value': row['count']
+        })
+    
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=15,
+            thickness=20,
+            line=dict(color='black', width=0.5),
+            label=nodes,
+            color='lightblue'
+        ),
+        link=dict(
+            source=[l['source'] for l in links],
+            target=[l['target'] for l in links],
+            value=[l['value'] for l in links]
+        )
+    )])
+    
+    fig.update_layout(title='Sankey Diagram: B-site → Dopant → Impurity', height=600)
+    return fig
+
+def generate_insights(df):
+    """Автоматическая генерация физических инсайтов на основе данных"""
+    insights = []
+    
+    # Корреляционный анализ
+    if 'x_boundary_value' in df.columns and 'lattice_strain_energy' in df.columns:
+        valid = df[['x_boundary_value', 'lattice_strain_energy']].dropna()
+        if len(valid) > 5:
+            spearman_r, spearman_p = stats.spearmanr(valid['x_boundary_value'], valid['lattice_strain_energy'])
+            if spearman_p < 0.05:
+                if spearman_r < -0.5:
+                    insights.append(f"**Strong negative correlation** between x_boundary and lattice_strain_energy (Spearman ρ = {spearman_r:.2f}, p < 0.05). Systems with higher strain energy have significantly lower solubility.")
+                elif spearman_r > 0.5:
+                    insights.append(f"**Strong positive correlation** between x_boundary and lattice_strain_energy (Spearman ρ = {spearman_r:.2f}, p < 0.05). Counterintuitive: strain may promote solubility in this system.")
+    
+    # Анализ tolerance factor
+    if 'tolerance_factor' in df.columns and 'x_boundary_value' in df.columns:
+        valid = df.dropna(subset=['tolerance_factor', 'x_boundary_value'])
+        if len(valid) > 10:
+            t_opt_range = valid[(valid['tolerance_factor'] >= 0.96) & (valid['tolerance_factor'] <= 1.04)]
+            t_outside = valid[(valid['tolerance_factor'] < 0.96) | (valid['tolerance_factor'] > 1.04)]
+            
+            if len(t_opt_range) > 0 and len(t_outside) > 0:
+                mean_opt = t_opt_range['x_boundary_value'].mean()
+                mean_out = t_outside['x_boundary_value'].mean()
+                if mean_opt > mean_out:
+                    ratio = mean_opt / mean_out if mean_out > 0 else float('inf')
+                    insights.append(f"Systems with tolerance factor in the optimal range [0.96-1.04] have **{ratio:.1f}x higher** average solubility (t_opt: {mean_opt:.3f} vs t_out: {mean_out:.3f}).")
+    
+    # Анализ Δr порога
+    if 'dr' in df.columns and 'has_impurity' in df.columns:
+        valid = df.dropna(subset=['dr', 'has_impurity'])
+        if len(valid) > 10:
+            impure = valid[valid['has_impurity']]['dr'].dropna()
+            if len(impure) > 3:
+                dr_threshold = impure.quantile(0.25)
+                insights.append(f"Impurity phases typically appear when Δr > {dr_threshold:.3f} Å (lower quartile of impurity-containing systems).")
+    
+    # Анализ свободного объема
+    if 'free_volume_fraction' in df.columns and 'x_boundary_value' in df.columns:
+        valid = df.dropna(subset=['free_volume_fraction', 'x_boundary_value'])
+        if len(valid) > 10:
+            high_vol = valid[valid['free_volume_fraction'] > valid['free_volume_fraction'].median()]
+            low_vol = valid[valid['free_volume_fraction'] <= valid['free_volume_fraction'].median()]
+            if len(high_vol) > 0 and len(low_vol) > 0:
+                mean_high = high_vol['x_boundary_value'].mean()
+                mean_low = low_vol['x_boundary_value'].mean()
+                if mean_high > mean_low:
+                    ratio = mean_high / mean_low if mean_low > 0 else float('inf')
+                    insights.append(f"Higher free volume fraction correlates with **{ratio:.1f}x higher solubility** (above median: {mean_high:.3f} vs below: {mean_low:.3f}).")
+    
+    # Анализ электроотрицательности
+    if 'Δχ_eff' in df.columns and 'x_boundary_value' in df.columns:
+        valid = df.dropna(subset=['Δχ_eff', 'x_boundary_value'])
+        if len(valid) > 5:
+            spearman_r, spearman_p = stats.spearmanr(valid['Δχ_eff'], valid['x_boundary_value'])
+            if spearman_p < 0.05 and abs(spearman_r) > 0.4:
+                direction = "positive" if spearman_r > 0 else "negative"
+                insights.append(f"Effective electronegativity difference Δχ_eff shows **{direction} correlation** with solubility (Spearman ρ = {spearman_r:.2f}, p < 0.05).")
+    
+    # Общий вывод
+    if len(insights) == 0:
+        insights.append("Insufficient data for automated insights. Add more data points to enable pattern detection.")
+    
+    return insights
 
 # ============================================================================
-# МОДИФИЦИРОВАННЫЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ С ПОДДЕРЖКОЙ АГРЕГАЦИИ
+# СУЩЕСТВУЮЩИЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (СОХРАНЕНЫ БЕЗ ИЗМЕНЕНИЙ)
 # ============================================================================
 def plot_solubility_vs_dr(df, ax, aggregate_mode=False):
     """График 1: x(boundary) vs Δr"""
@@ -2256,7 +2757,7 @@ def plot_shift_vs_dr_bubble(df, aggregate_mode=False):
     return fig
 
 # ============================================================================
-# СУЩЕСТВУЮЩИЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (НЕ ИЗМЕНЯЮТСЯ)
+# СУЩЕСТВУЮЩИЕ ФУНКЦИИ ДЛЯ ПОСТРОЕНИЯ ГРАФИКОВ (ПРОДОЛЖЕНИЕ)
 # ============================================================================
 def plot_pca(df):
     """График 7: PCA анализ"""
@@ -2985,6 +3486,7 @@ def plot_comprehensive_correlation_matrix(df, include_lower_bounds=True):
     features = ['dr', 'dr_rel', 'tolerance_factor', 't_gradient', 't_range',
                 'Δχ', 'Δχ_gradient', 'free_volume_fraction', 'packing_factor',
                 'E_form', 'lattice_strain_energy', 'oxygen_vacancy_conc',
+                'size_misfit', 'elastic_misfit', 'Δχ_eff', 'ionic_potential_avg',
                 'x_boundary_value', 'x_max']
     
     available_features = [f for f in features if f in df.columns]
@@ -3014,13 +3516,17 @@ def plot_comprehensive_correlation_matrix(df, include_lower_bounds=True):
         'E_form': 'E_form',
         'lattice_strain_energy': 'ε_strain',
         'oxygen_vacancy_conc': '[V_O]',
+        'size_misfit': 'size_misfit',
+        'elastic_misfit': 'elastic_misfit',
+        'Δχ_eff': 'Δχ_eff',
+        'ionic_potential_avg': 'z/r_avg',
         'x_boundary_value': 'x_boundary',
         'x_max': 'x_max'
     }
     
     corr_df_renamed = corr_df.rename(columns=rename_map)
     
-    fig, ax = plt.subplots(figsize=(14, 12))
+    fig, ax = plt.subplots(figsize=(16, 14))
     
     mask = np.triu(np.ones_like(corr_df_renamed.corr(), dtype=bool))
     sns.heatmap(corr_df_renamed.corr(), mask=mask, annot=True, fmt='.2f',
@@ -3154,6 +3660,381 @@ def plot_formation_energy_vs_xboundary(df, ax, aggregate_mode=False):
     return ax
 
 # ============================================================================
+# НОВЫЕ ФУНКЦИИ ДЛЯ SOLUBILITY ANALYSIS (2a-2f)
+# ============================================================================
+def plot_solubility_vs_delta_chi(df, ax, aggregate_mode=False):
+    """График 2a: x(boundary) vs Δχ (разница электроотрицательностей)"""
+    valid = df.dropna(subset=['Δχ', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for Δχ analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'Δχ'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'Δχ'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'Δχ'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'Δχ'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Electronegativity Difference Δχ = |χ_avg_B - χ_A|')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Electronegativity Difference\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Electronegativity Difference\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_avg_chi(df, ax, aggregate_mode=False):
+    """График 2b: x(boundary) vs χ_avg_B (средняя электроотрицательность B-сайта)"""
+    valid = df.dropna(subset=['χ_avg_B', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for χ_avg_B analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'χ_avg_B'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'χ_avg_B'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'χ_avg_B'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'χ_avg_B'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Average B-site Electronegativity χ_avg_B = (1-x)·χ_B + x·χ_D')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Average B-site Electronegativity\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Average B-site Electronegativity\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_avg_radius(df, ax, aggregate_mode=False):
+    """График 2c: x(boundary) vs r_avg_B (средний ионный радиус B-сайта)"""
+    valid = df.dropna(subset=['r_avg_B', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for r_avg_B analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'r_avg_B'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'r_avg_B'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'r_avg_B'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'r_avg_B'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Average B-site Ionic Radius r_avg_B = (1-x)·r_B + x·r_D (Å)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Average B-site Radius\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Average B-site Radius\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_formation_energy(df, ax, aggregate_mode=False):
+    """График 2d: x(boundary) vs E_form (энергия образования)"""
+    valid = df.dropna(subset=['E_form', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for formation energy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'E_form'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'E_form'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'E_form'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'E_form'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Formation Energy (eV/atom)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Formation Energy\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Formation Energy\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_strain_energy(df, ax, aggregate_mode=False):
+    """График 2e: x(boundary) vs lattice_strain_energy (энергия деформации решетки)"""
+    valid = df.dropna(subset=['lattice_strain_energy', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for lattice strain energy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'lattice_strain_energy'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'lattice_strain_energy'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'lattice_strain_energy'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'lattice_strain_energy'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Lattice Strain Energy ε_strain = (Δr)²·(1-x)·x (arb. units)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Lattice Strain Energy\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Lattice Strain Energy\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+def plot_solubility_vs_vacancy_conc(df, ax, aggregate_mode=False):
+    """График 2f: x(boundary) vs oxygen_vacancy_conc (концентрация кислородных вакансий)"""
+    valid = df.dropna(subset=['oxygen_vacancy_conc', 'x_boundary_value'])
+    
+    if len(valid) < 3:
+        ax.text(0.5, 0.5, 'Insufficient data for oxygen vacancy analysis',
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    for b_element in valid['B_element'].unique():
+        mask = valid['B_element'] == b_element
+        color = B_COLORS.get(b_element, B_COLORS['default'])
+        
+        if aggregate_mode:
+            data_mask = mask & (valid['x_boundary_value'].notna())
+            if data_mask.any():
+                ax.scatter(
+                    valid.loc[data_mask, 'oxygen_vacancy_conc'],
+                    valid.loc[data_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element}"
+                )
+                lower_mask = data_mask & (valid['x_boundary_type'] == 'lower_bound')
+                for idx in valid[lower_mask].index:
+                    ax.annotate('≥', 
+                               (valid.loc[idx, 'oxygen_vacancy_conc'], valid.loc[idx, 'x_boundary_value']),
+                               textcoords="offset points", xytext=(5, 5), 
+                               ha='center', fontsize=8, fontweight='bold')
+        else:
+            exact_mask = mask & (valid['x_boundary_type'] == 'exact')
+            lower_mask = mask & (valid['x_boundary_type'] == 'lower_bound')
+            
+            if exact_mask.any():
+                ax.scatter(
+                    valid.loc[exact_mask, 'oxygen_vacancy_conc'],
+                    valid.loc[exact_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.9,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (exact)"
+                )
+            
+            if lower_mask.any():
+                ax.scatter(
+                    valid.loc[lower_mask, 'oxygen_vacancy_conc'],
+                    valid.loc[lower_mask, 'x_boundary_value'],
+                    color=color, s=100, alpha=0.3,
+                    edgecolors='black', linewidth=0.5,
+                    label=f"{b_element} (≥)",
+                    marker='s'
+                )
+    
+    ax.set_xlabel('Oxygen Vacancy Concentration [V_O] = x/2 (per formula unit)')
+    ax.set_ylabel('x(boundary)')
+    if aggregate_mode:
+        ax.set_title('Solubility Limit vs Oxygen Vacancy Concentration\n(≥ indicates lower bound estimate)')
+    else:
+        ax.set_title('Solubility Limit vs Oxygen Vacancy Concentration\n(Hollow markers = lower bound estimates)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    return ax
+
+# ============================================================================
 # ОСНОВНОЕ STREAMLIT-ПРИЛОЖЕНИЕ
 # ============================================================================
 def main():
@@ -3209,6 +4090,8 @@ def main():
             | **t** | Tolerance factor (Goldschmidt) | `t = (r_A + r_O) / [√2·(r_avg_B + r_O)]` |
             | **Δt** | Tolerance factor change | `Δt = t(x=0) - t(x_boundary)` |
             | **dt/dx** | Tolerance factor gradient | Rate of change of t with x |
+            | **size_misfit** | Quadratic size misfit | `size_misfit = x·(Δr)²/r_B` |
+            | **elastic_misfit** | Elastic misfit energy proxy | `elastic_misfit = (Δr/r_B)²·x·(1-x)` |
             
             ### ⚡ **Electronegativity Parameters**
             
@@ -3218,6 +4101,9 @@ def main():
             | **χ_avg_B** | Average B-site electronegativity | `χ_avg = (1-x)·χ_B + x·χ_D` |
             | **Δχ** | Electronegativity difference | `Δχ = |χ_avg_B - χ_A|` |
             | **dΔχ/dx** | Electronegativity gradient | Rate of change of Δχ with x |
+            | **Δχ_eff** | Effective Δχ relative to oxygen | `Δχ_eff = |χ_avg_B - χ_O| - |χ_A - χ_O|` |
+            | **bond_strength** | Pauling bond strength proxy | `(χ - χ_O)²` |
+            | **χ_variance** | Electronegativity variance on B-site | `x·(1-x)·(χ_D - χ_B)²` |
             
             ### 🧊 **Volumetric Parameters**
             
@@ -3239,11 +4125,30 @@ def main():
             | **[V_O]** | Oxygen vacancy concentration | `[V_O] = x/2` (per formula unit) |
             | **M** | Molar mass | `M = M_A + (1-x)M_B + x·M_D + (3-x/2)M_O` (g/mol) |
             
+            ### ⚛️ **Ionic Parameters**
+            
+            | Symbol | Description | Formula / Notes |
+            |--------|-------------|-----------------|
+            | **z/r** | Ionic potential | `z/r` (Å⁻¹) - measure of polarizing power |
+            | **Δ(z/r)** | Difference in ionic potential | `|(z_D/r_D) - (z_B/r_B)|` |
+            | **octahedral_tilting** | Tilting tendency estimate | `max(0, 0.96 - t) × 10` |
+            
+            ### 🎯 **Hybrid Parameters**
+            
+            | Symbol | Description | Formula / Notes |
+            |--------|-------------|-----------------|
+            | **t·(1+Δr/r_B)** | Combined geometry-misfit | `t × (1 + Δr_rel)` |
+            | **Δχ·Δr** | Product of Δχ and Δr | Often gives good separation |
+            | **ε_strain/t** | Normalized strain energy | `ε_strain / t` |
+            | **[V_O]·φ** | Vacancy mobility proxy | `[V_O] × φ` |
+            
             ### 📊 **Composition Parameters**
             
             | Symbol | Description | Notes |
             |--------|-------------|-------|
             | **x_boundary** | Solubility limit | Maximum x for single-phase solid solution |
+            | **log_x_boundary** | Logarithmic solubility | `log10(x_boundary + ε)` |
+            | **solubility_energy_proxy** | Solubility energy proxy | `-ln(x_boundary + ε)` |
             | **x_max** | Optimum conductivity concentration | x where conductivity is maximum |
             | **x_inv_in** | Start of investigated range | Minimum x studied |
             | **x_inv_end** | End of investigated range | Maximum x studied |
@@ -3264,6 +4169,7 @@ def main():
             | **Spearman ρ** | Rank correlation coefficient |
             | **p-value** | Statistical significance |
             | **R²** | Coefficient of determination |
+            | **SHAP values** | Feature contribution to predictions |
             """)
 
         st.markdown("---")
@@ -3410,8 +4316,10 @@ def main():
         with st.expander("📋 View processed data"):
             display_cols = ['B_element', 'D_element', 'x_boundary_value', 'x_boundary_type',
                            'x_boundary_raw', 'x_inv_in', 'x_inv_end', 'x_max',
-                           'dr', 'tolerance_factor', 'free_volume_fraction', 'packing_factor',
-                           'E_form', 'Δχ', 'has_impurity', 'year']
+                           'dr', 'tolerance_factor', 'size_misfit', 'elastic_misfit',
+                           'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
+                           'packing_factor', 'E_form', 'log_x_boundary', 'solubility_energy_proxy',
+                           'has_impurity', 'year', 'system']
             available_cols = [col for col in display_cols if col in filtered_df.columns]
             st.dataframe(filtered_df[available_cols], use_container_width=True)
             
@@ -3426,13 +4334,14 @@ def main():
         st.markdown("---")
         
         # Вкладки
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📊 Basic Statistics",
             "🔬 Solubility Analysis",
             "⚡ Conductivity Analysis",
             "📈 Advanced Visualization",
             "🧊 Volumetric & Thermodynamic",
-            "🤖 ML Insights"
+            "🤖 ML Insights",
+            "🎯 SHAP Analysis"
         ])
         
         # ============================================================================
@@ -3472,13 +4381,20 @@ def main():
             plt.close(fig)
             
             st.subheader("Detailed Correlations with p-values")
-            features = ['dr', 'dr_rel', 'tolerance_factor', 'free_volume_fraction',
-                        'packing_factor', 'x_boundary_value', 'x_max']
+            features = ['dr', 'dr_rel', 'tolerance_factor', 'size_misfit', 'elastic_misfit',
+                        'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
+                        'packing_factor', 'x_boundary_value', 'x_max', 'log_x_boundary']
             available_features = [f for f in features if f in filtered_df.columns]
             if len(available_features) >= 2:
                 corr_df = calculate_correlations(filtered_df, available_features, include_lower_bounds, aggregate_lower_bounds)
                 if len(corr_df) > 0:
                     st.dataframe(corr_df, use_container_width=True)
+            
+            # Автоматическая генерация инсайтов
+            st.subheader("💡 Automated Physical Insights")
+            insights = generate_insights(filtered_df)
+            for insight in insights:
+                st.info(insight)
         
         # ============================================================================
         # ВКЛАДКА 2: SOLUBILITY ANALYSIS (ОБНОВЛЕНА С НОВЫМИ ГРАФИКАМИ)
@@ -3500,7 +4416,10 @@ def main():
                     "2c: Solubility vs Average B-site Radius (r_avg_B)",
                     "2d: Solubility vs Formation Energy (E_form)",
                     "2e: Solubility vs Lattice Strain Energy (ε_strain)",
-                    "2f: Solubility vs Oxygen Vacancy Concentration ([V_O])"
+                    "2f: Solubility vs Oxygen Vacancy Concentration ([V_O])",
+                    "Contour Plot: t-Δr vs x(boundary)",
+                    "Parallel Coordinates Plot",
+                    "Violin Plot by Impurity"
                 ],
                 default=["Solubility vs Radius Difference", "Δr Heatmap with x(boundary)", "2a: Solubility vs Electronegativity Difference (Δχ)"]
             )
@@ -3556,7 +4475,6 @@ def main():
                             st.dataframe(pub_matrix, use_container_width=True)
                             plot_idx -= 1
                     
-                    # НОВЫЕ ГРАФИКИ 2a-2f
                     elif plot_name == "2a: Solubility vs Electronegativity Difference (Δχ)":
                         if 'Δχ' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
                             plot_solubility_vs_delta_chi(filtered_df, ax, aggregate_lower_bounds)
@@ -3592,6 +4510,27 @@ def main():
                             plot_solubility_vs_vacancy_conc(filtered_df, ax, aggregate_lower_bounds)
                         else:
                             ax.text(0.5, 0.5, 'oxygen_vacancy_conc data not available', ha='center', va='center')
+                    
+                    elif plot_name == "Contour Plot: t-Δr vs x(boundary)":
+                        if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                            plot_contour_t_dr(filtered_df, ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'Required data missing', ha='center', va='center')
+                    
+                    elif plot_name == "Parallel Coordinates Plot":
+                        if 'x_boundary_value' in filtered_df.columns:
+                            plt.close(fig)
+                            parallel_fig = plot_parallel_coordinates(filtered_df, ax)
+                            if isinstance(parallel_fig, plt.Figure):
+                                st.pyplot(parallel_fig)
+                                plt.close(parallel_fig)
+                            plot_idx -= 1
+                    
+                    elif plot_name == "Violin Plot by Impurity":
+                        if 'x_boundary_value' in filtered_df.columns and 'has_impurity' in filtered_df.columns:
+                            plot_violin_by_impurity(filtered_df, 'x_boundary_value', ax, aggregate_lower_bounds)
+                        else:
+                            ax.text(0.5, 0.5, 'Required data missing', ha='center', va='center')
                     
                     if not show_grid:
                         ax.grid(False)
@@ -3673,13 +4612,16 @@ def main():
                 "Select advanced plots",
                 options=[
                     "PCA Analysis",
+                    "PCA Loadings Plot",
                     "Impurity Phase Diagram (t-Δr)",
                     "Temporal Trends",
                     "Tolerance Factor Evolution",
                     "Goldschmidt Bubble Diagram",
-                    "Dopant Comparison by B-site"
+                    "Dopant Comparison by B-site",
+                    "3D Interactive Plot",
+                    "Sankey Diagram"
                 ],
-                default=["PCA Analysis", "Goldschmidt Bubble Diagram"]
+                default=["PCA Analysis", "Goldschmidt Bubble Diagram", "3D Interactive Plot"]
             )
             
             for plot_name in adv_plots:
@@ -3687,6 +4629,12 @@ def main():
                     fig = plot_pca(filtered_df)
                     st.pyplot(fig)
                     plt.close(fig)
+                
+                elif plot_name == "PCA Loadings Plot":
+                    fig = plot_pca_loadings(filtered_df)
+                    if fig is not None:
+                        st.pyplot(fig)
+                        plt.close(fig)
                 
                 elif plot_name == "Impurity Phase Diagram (t-Δr)":
                     if 'tolerance_factor' in filtered_df.columns and 'dr' in filtered_df.columns:
@@ -3729,6 +4677,12 @@ def main():
                         fig = plot_dopant_comparison_boxplot(filtered_df, selected_dopant, include_lower_bounds)
                         st.pyplot(fig)
                         plt.close(fig)
+                
+                elif plot_name == "3D Interactive Plot":
+                    st.plotly_chart(plot_3d_interactive(filtered_df), use_container_width=True)
+                
+                elif plot_name == "Sankey Diagram":
+                    st.plotly_chart(plot_sankey_diagram(filtered_df), use_container_width=True)
         
         # ============================================================================
         # ВКЛАДКА 5: VOLUMETRIC & THERMODYNAMIC
@@ -3820,34 +4774,165 @@ def main():
         with tab6:
             st.subheader("Machine Learning Insights")
             
-            st.markdown("**Feature Importance Analysis (Random Forest)**")
-            fig, importance_df = plot_feature_importance(filtered_df)
-            st.pyplot(fig)
-            plt.close(fig)
+            # Выбор признаков для ML
+            ml_features = st.multiselect(
+                "Select features for ML analysis",
+                options=[f for f in ['dr', 'tolerance_factor', 'size_misfit', 'elastic_misfit',
+                                     'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
+                                     'lattice_strain_energy', 'oxygen_vacancy_conc', 'packing_factor']
+                         if f in filtered_df.columns],
+                default=[f for f in ['dr', 'tolerance_factor', 'size_misfit', 'Δχ_eff', 'free_volume_fraction']
+                         if f in filtered_df.columns][:5]
+            )
             
-            if importance_df is not None:
-                st.dataframe(importance_df, use_container_width=True)
+            col1, col2 = st.columns(2)
             
-            st.markdown("---")
-            st.subheader("Publication Analysis")
-            
-            if 'doi' in filtered_df.columns:
-                st.metric("Total publications", filtered_df['doi'].nunique())
-            
-            if 'year' in filtered_df.columns:
-                year_stats = filtered_df['year'].dropna()
-                if len(year_stats) > 0:
-                    st.metric("Year range", f"{int(year_stats.min())} - {int(year_stats.max())}")
-                    st.metric("Median year", int(year_stats.median()))
-                    
-                    fig, ax = plt.subplots(figsize=(10, 4))
-                    ax.hist(year_stats, bins=20, edgecolor='black', alpha=0.7)
-                    ax.set_xlabel('Year')
-                    ax.set_ylabel('Number of publications')
-                    ax.set_title('Publication Year Distribution')
-                    ax.grid(True, alpha=0.3)
+            with col1:
+                st.markdown("**Feature Importance (Random Forest)**")
+                fig, importance_df = plot_feature_importance(filtered_df)
+                if fig is not None:
                     st.pyplot(fig)
                     plt.close(fig)
+                if importance_df is not None:
+                    st.dataframe(importance_df, use_container_width=True)
+            
+            with col2:
+                st.markdown("**Model Comparison**")
+                models_df, models, X, y = compare_ml_models(filtered_df, ml_features, 'x_boundary_value')
+                if models_df is not None:
+                    st.dataframe(models_df, use_container_width=True)
+            
+            # Clustering
+            st.markdown("**Clustering Analysis (DBSCAN)**")
+            cluster_features = st.multiselect(
+                "Features for clustering",
+                options=ml_features,
+                default=ml_features[:min(3, len(ml_features))]
+            )
+            
+            if len(cluster_features) >= 2:
+                eps = st.slider("DBSCAN eps", 0.1, 2.0, 0.5, 0.05)
+                min_samples = st.slider("min_samples", 2, 10, 3, 1)
+                
+                labels, plot_df = perform_clustering(filtered_df, cluster_features, eps, min_samples)
+                if labels is not None:
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    scatter = ax.scatter(plot_df[cluster_features[0]], plot_df[cluster_features[1]], 
+                                        c=labels, cmap='viridis', s=100, edgecolors='black')
+                    ax.set_xlabel(cluster_features[0])
+                    ax.set_ylabel(cluster_features[1])
+                    ax.set_title(f'DBSCAN Clustering (eps={eps}, min_samples={min_samples})')
+                    plt.colorbar(scatter, ax=ax, label='Cluster')
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    st.write(f"Number of clusters: {len(set(labels)) - (1 if -1 in labels else 0)}")
+                    st.write(f"Number of noise points: {(labels == -1).sum()}")
+        
+        # ============================================================================
+        # ВКЛАДКА 7: SHAP ANALYSIS
+        # ============================================================================
+        with tab7:
+            st.subheader("SHAP Analysis for Model Interpretability")
+            
+            st.markdown("""
+            **SHAP (SHapley Additive exPlanations)** values show how each feature contributes to the prediction.
+            - **Red** = higher feature value increases prediction
+            - **Blue** = higher feature value decreases prediction
+            - **x-axis** = impact on solubility prediction
+            """)
+            
+            shap_features = st.multiselect(
+                "Select features for SHAP analysis",
+                options=[f for f in ['dr', 'tolerance_factor', 'size_misfit', 'elastic_misfit',
+                                     'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
+                                     'lattice_strain_energy', 'oxygen_vacancy_conc']
+                         if f in filtered_df.columns],
+                default=[f for f in ['dr', 'tolerance_factor', 'size_misfit', 'Δχ_eff']
+                         if f in filtered_df.columns][:4]
+            )
+            
+            if len(shap_features) >= 2:
+                # Обучаем модель для SHAP
+                plot_df = filtered_df.dropna(subset=shap_features + ['x_boundary_value'])
+                
+                if len(plot_df) > 10:
+                    X_shap = plot_df[shap_features].copy()
+                    if 'B_element' in plot_df.columns:
+                        X_shap = pd.concat([X_shap, pd.get_dummies(plot_df['B_element'], prefix='B')], axis=1)
+                    y_shap = plot_df['x_boundary_value']
+                    
+                    model = xgb.XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
+                    model.fit(X_shap, y_shap)
+                    
+                    # SHAP values
+                    explainer, shap_values = calculate_shap_values(model, X_shap, X_shap.columns.tolist())
+                    
+                    if explainer is not None and shap_values is not None:
+                        # Summary plot
+                        st.markdown("**SHAP Summary Plot**")
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        shap.summary_plot(shap_values, X_shap, feature_names=X_shap.columns.tolist(), show=False)
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                        
+                        # Bar plot
+                        st.markdown("**SHAP Feature Importance (Mean |SHAP|)**")
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        shap.summary_plot(shap_values, X_shap, feature_names=X_shap.columns.tolist(), 
+                                        plot_type="bar", show=False)
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                        
+                        # Individual force plot
+                        st.markdown("**SHAP Force Plot for a Random Sample**")
+                        sample_idx = np.random.randint(0, len(X_shap))
+                        fig, ax = plt.subplots(figsize=(12, 2))
+                        shap.force_plot(explainer.expected_value, shap_values[sample_idx,:], 
+                                       X_shap.iloc[sample_idx,:], feature_names=X_shap.columns.tolist(),
+                                       matplotlib=True, show=False)
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                        
+                        # Partial Dependence Plots
+                        st.markdown("**Partial Dependence Plots (PDP)**")
+                        pdp_features = st.multiselect(
+                            "Select features for PDP",
+                            options=shap_features,
+                            default=shap_features[:min(2, len(shap_features))]
+                        )
+                        
+                        if pdp_features:
+                            n_pdp = len(pdp_features)
+                            fig, axes = plt.subplots(1, n_pdp, figsize=(6*n_pdp, 5))
+                            if n_pdp == 1:
+                                axes = [axes]
+                            
+                            for i, feat in enumerate(pdp_features):
+                                plot_partial_dependence(model, X_shap, feat, axes[i])
+                            
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        
+                        # ICE plots
+                        st.markdown("**ICE Curves (Individual Conditional Expectation)**")
+                        ice_feature = st.selectbox("Select feature for ICE plots", options=shap_features)
+                        if ice_feature:
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            plot_ice_curves(model, X_shap, ice_feature, ax)
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            plt.close(fig)
+                    else:
+                        st.warning("SHAP calculation failed. Try with different features.")
+                else:
+                    st.warning(f"Insufficient data for SHAP analysis. Need at least 10 samples, have {len(plot_df)}.")
+            else:
+                st.info("Select at least 2 features for SHAP analysis.")
     
     else:
         st.info("👈 Please upload an Excel file to begin analysis")
@@ -3872,22 +4957,51 @@ def main():
         
         st.markdown("""
         ### Key improvements in this version:
-        - **NEW: Aggregated Mode** - Treats '-' entries as x(inv,end) for conservative estimates
-        - **NEW: Visual distinction for lower bounds** - '≥' annotations on plots in aggregated mode
-        - **NEW: Extended Solubility Analysis** - Added 6 new plots (2a-2f) for comprehensive descriptor analysis:
-          - Δχ (electronegativity difference)
-          - χ_avg_B (average B-site electronegativity)
-          - r_avg_B (average B-site ionic radius)
-          - E_form (formation energy)
-          - ε_strain (lattice strain energy)
-          - [V_O] (oxygen vacancy concentration)
-        - **Improved statistics** - Mean solubility now includes lower bound estimates when aggregated
-        - **New volumetric descriptors**: V_cations, V_cell, V_free, packing factor, free volume fraction
-        - **New thermodynamic descriptors**: Formation energy, band gap, lattice strain energy
-        - **New plots**: Free volume vs solubility, formation energy vs solubility, 3D phase diagram, pairplot, density prediction, radar chart
-        - **Comprehensive correlation matrix** with all 15+ descriptors
-        - **"-" in x(boundary)** is now interpreted as **lower bound estimate** (≥ x(inv,end))
-        - **Two processing modes**: Standard (distinct markers) and Aggregated (unified markers with annotations)
+        
+        #### 🆕 **NEW: Advanced Descriptor System**
+        - **PerovskiteDescriptorCalculator class** - Modular calculation of all descriptors
+        - **New geometric descriptors**: size_misfit, elastic_misfit, octahedral_tilting
+        - **New electronic descriptors**: Δχ_eff (oxygen-weighted), bond_strength, electronegativity_variance
+        - **New ionic descriptors**: ionic_potential (z/r), Δ_ionic_potential
+        - **New hybrid descriptors**: t_dr_hybrid, Δχ_dr_hybrid, strain_t_ratio, vacancy_mobility_proxy
+        - **Logarithmic target**: log_x_boundary, solubility_energy_proxy for linearized correlations
+        
+        #### 🤖 **NEW: Machine Learning & Interpretability**
+        - **SHAP analysis** with summary plots, force plots, and feature importance
+        - **Model comparison**: Random Forest, Gradient Boosting, XGBoost with cross-validation
+        - **Partial Dependence Plots (PDP)** and **ICE curves** for individual features
+        - **DBSCAN clustering** to identify material families
+        - **Feature importance analysis** with customizable feature selection
+        
+        #### 📊 **NEW: Advanced Visualizations**
+        - **Contour plots** - x_boundary as function of t and Δr
+        - **Parallel Coordinates Plot** for multivariate analysis
+        - **Interactive 3D plots** with plotly
+        - **PCA loadings plot** (correlation circle)
+        - **Sankey diagram** for data flow (B-site → Dopant → Impurity)
+        - **Violin plots with impurity separation**
+        - **Comprehensive correlation matrix** with 15+ descriptors
+        
+        #### 💡 **NEW: Automated Insights**
+        - **Rule-based insight generation** - automatically detects and reports:
+          - Strong correlations with solubility
+          - Optimal tolerance factor ranges
+          - Critical Δr thresholds for impurity formation
+          - Free volume fraction effects
+          - Electronegativity trends
+        
+        #### 🚀 **Technical Improvements**
+        - **@st.cache_data decorators** for all heavy computations
+        - **Modular PerovskiteDescriptorCalculator class**
+        - **System column** for easy identification (e.g., "BaCeO3 + 0.15Gd")
+        - **Enhanced error handling** for missing data
+        - **Configurable descriptor selection** in sidebar
+        
+        ### Key Features:
+        - **Aggregated Mode** - Treats '-' entries as x(inv,end) for conservative estimates
+        - **Visual distinction for lower bounds** - '≥' annotations on plots
+        - **Extended Solubility Analysis** - 6 new plots (2a-2f) for comprehensive descriptor analysis
+        - **Improved statistics** - Mean solubility includes lower bound estimates when aggregated
         """)
 
 if __name__ == "__main__":

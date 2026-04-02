@@ -10,3 +10,4 @@ kaleido
 scikit-learn
 openpyxl
 shap
+xgboost

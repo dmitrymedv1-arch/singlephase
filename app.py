@@ -4320,6 +4320,8 @@ def main():
                            'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
                            'packing_factor', 'E_form', 'log_x_boundary', 'solubility_energy_proxy',
                            'has_impurity', 'year', 'system']
+            # Убираем дубликаты колонок из DataFrame
+            filtered_df = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
             available_cols = [col for col in display_cols if col in filtered_df.columns]
             st.dataframe(filtered_df[available_cols], use_container_width=True)
             

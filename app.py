@@ -4744,7 +4744,6 @@ def main():
                     if 'free_volume_fraction' in filtered_df.columns and 'packing_factor' in filtered_df.columns:
                         fig = plot_pairplot_volumetric(filtered_df, include_lower_bounds)
                         st.pyplot(fig)
-                        plt.close(fig)
                     else:
                         st.warning("Volumetric parameters not available.")
                 

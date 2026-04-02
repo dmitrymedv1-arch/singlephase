@@ -1253,10 +1253,10 @@ def compare_ml_models(df, selected_features=None, target='x_boundary_value'):
     return pd.DataFrame(results), models, X, y
 
 @st.cache_data
-def calculate_shap_values(_model, X, feature_names):
+def calculate_shap_values(model, X, feature_names):
     """Расчет SHAP values для модели"""
     try:
-        explainer = shap.TreeExplainer(_model)
+        explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X)
         return explainer, shap_values
     except Exception as e:
@@ -4288,9 +4288,8 @@ def main():
         
         with col1:
             st.markdown("**Solubility Statistics by B-site**")
-            filtered_df_unique = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            if 'x_boundary_value' in filtered_df_unique.columns and 'B_element' in filtered_df_unique.columns:
-                df_stats = filtered_df_unique.dropna(subset=['x_boundary_value'])
+            if 'x_boundary_value' in filtered_df.columns and 'B_element' in filtered_df.columns:
+                df_stats = filtered_df.dropna(subset=['x_boundary_value'])
                 
                 if len(df_stats) > 0:
                     b_stats = df_stats.groupby('B_element')['x_boundary_value'].agg(['mean', 'median', 'count', 'std']).round(3)
@@ -4298,17 +4297,15 @@ def main():
         
         with col2:
             st.markdown("**Top 5 Dopants by Median Solubility**")
-            filtered_df_unique = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            dopant_stats = get_dopant_statistics(filtered_df_unique, include_lower_bounds, aggregate_lower_bounds)
+            dopant_stats = get_dopant_statistics(filtered_df, include_lower_bounds, aggregate_lower_bounds)
             if len(dopant_stats) > 0:
                 top_d = dopant_stats.head(5)[['Dopant', 'Median', 'Count', 'Exact values', 'Lower bounds']]
                 st.dataframe(top_d, use_container_width=True)
         
         with col3:
             st.markdown("**Conductivity Maximum Position**")
-            filtered_df_unique = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            if 'x_max' in filtered_df_unique.columns and 'x_boundary_value' in filtered_df_unique.columns:
-                valid = filtered_df_unique.dropna(subset=['x_max', 'x_boundary_value'])
+            if 'x_max' in filtered_df.columns and 'x_boundary_value' in filtered_df.columns:
+                valid = filtered_df.dropna(subset=['x_max', 'x_boundary_value'])
                 if len(valid) > 0:
                     diff = (valid['x_max'] - valid['x_boundary_value']) / valid['x_boundary_value']
                     within_10pct = (abs(diff) < 0.1).mean()
@@ -4317,14 +4314,14 @@ def main():
                     st.metric("Samples with x(max) > x(boundary)", f"{(diff > 0).mean():.1%}")
         
         with st.expander("📋 View processed data"):
-            filtered_df = filtered_df.loc[:, ~filtered_df.columns.duplicated()]
-            
             display_cols = ['B_element', 'D_element', 'x_boundary_value', 'x_boundary_type',
                            'x_boundary_raw', 'x_inv_in', 'x_inv_end', 'x_max',
-                           'dr', 'tolerance_factor', 'free_volume_fraction', 'packing_factor',
-                           'E_form', 'Δχ', 'has_impurity', 'year']
-            available_cols = [col for col in display_cols if col in filtered_df_display.columns]
-            st.dataframe(filtered_df_display[available_cols], use_container_width=True)
+                           'dr', 'tolerance_factor', 'size_misfit', 'elastic_misfit',
+                           'Δχ', 'Δχ_eff', 'ionic_potential_avg', 'free_volume_fraction',
+                           'packing_factor', 'E_form', 'log_x_boundary', 'solubility_energy_proxy',
+                           'has_impurity', 'year', 'system']
+            available_cols = [col for col in display_cols if col in filtered_df.columns]
+            st.dataframe(filtered_df[available_cols], use_container_width=True)
             
             csv = filtered_df.to_csv(index=False).encode('utf-8')
             st.download_button(

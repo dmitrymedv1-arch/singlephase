@@ -29,7 +29,7 @@ warnings.filterwarnings('ignore')
 # Константы
 AVOGADRO_NUMBER = 6.02214076e23  # моль⁻¹
 OXYGEN_RADIUS = 1.4  # Å
-PREFACTOR_VOLUME = 16 * np.pi / 3  # 16π/3 для расчета объема сфер
+PREFACTOR_VOLUME = 4 * np.pi / 3  # 4π/3 для расчета объема сфер
 
 # Научный стиль графиков
 plt.rcParams.update({

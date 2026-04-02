@@ -1253,10 +1253,10 @@ def compare_ml_models(df, selected_features=None, target='x_boundary_value'):
     return pd.DataFrame(results), models, X, y
 
 @st.cache_data
-def calculate_shap_values(model, X, feature_names):
+def calculate_shap_values(_model, X, feature_names):
     """Расчет SHAP values для модели"""
     try:
-        explainer = shap.TreeExplainer(model)
+        explainer = shap.TreeExplainer(_model)
         shap_values = explainer.shap_values(X)
         return explainer, shap_values
     except Exception as e:
